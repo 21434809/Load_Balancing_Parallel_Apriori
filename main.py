@@ -14,7 +14,7 @@ from src.apriori import (
 HYPERMARKET_URL = "https://media.githubusercontent.com/media/dsfsi/dsfsi-datasets/refs/heads/master/data/cos781/hypermarket_dataset.csv"
 
 
-def main():
+def run_analysis():
     print("Starting Load Balancing Parallel Apriori...")
     
     # Lets load the data
@@ -62,6 +62,36 @@ def main():
     results = run_complete_analysis(market_basket)
     
     return results
+
+
+def main():
+    import os
+    import glob
+    
+    print("Loading CSV data from data directory...")
+    
+    # Look for CSV files in the data directory
+    data_dir = "data"
+    csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
+    
+    if not csv_files:
+        print(f"No CSV files found in {data_dir} directory")
+        return
+    
+    # Load and display information for each CSV file
+    for csv_file in csv_files:
+        print(f"\n{'='*50}")
+        print(f"File: {csv_file}")
+        print(f"{'='*50}")
+        
+        try:
+            df = pd.read_csv(csv_file)
+            print(f"Shape: {df.shape}")
+            print(f"Column headers: {df.columns.tolist()}")
+            print(f"First 3 rows:")
+            print(df.head(3))
+        except Exception as e:
+            print(f"Error loading {csv_file}: {e}")
 
 
 if __name__ == "__main__":
