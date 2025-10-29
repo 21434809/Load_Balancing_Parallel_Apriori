@@ -3,8 +3,10 @@ import numpy as np
 import os
 from tid import TID, mine_frequent_itemsets
 import time
+import json
+from datetime import datetime
 
-def load_instacart_data(data_dir="../data", verbose=True):
+def load_instacart_data(data_dir="../../data", verbose=True):
     """
     Load the Instacart dataset from your downloaded data directory.
     
@@ -165,7 +167,6 @@ def run_tid_analysis(transaction_df, min_support=0.002, max_k=5, data=None, verb
         print("-"*60)
         print(f"  Total transactions: {stats['total_transactions']:,}")
         print(f"  Unique items: {stats['unique_items']:,}")
-        print(f"  Build time: {stats['build_time_seconds']:.3f} seconds")
         print(f"  Avg TID length: {stats['avg_tid_length']:.1f}")
         print(f"  Median TID length: {stats['median_tid_length']:.1f}")
         print(f"  Max TID length: {stats['max_tid_length']:.0f}")
@@ -212,51 +213,114 @@ def run_tid_analysis(transaction_df, min_support=0.002, max_k=5, data=None, verb
     return tid, frequent
 
 
+def run_tid_analysis(transaction_df, min_support=0.002, max_k=5, data=None, verbose=True):
+    timings = {}
+    start_total = time.time()
+
+    t0 = time.time()
+    tid = TID()
+    tid.build_from_orders(transaction_df, verbose=verbose)
+    timings["build_tid_seconds"] = time.time() - t0
+
+    t1 = time.time()
+    frequent = mine_frequent_itemsets(tid, min_support=min_support, max_k=max_k, verbose=verbose)
+    timings["mine_itemsets_seconds"] = time.time() - t1
+
+    timings["total_runtime_seconds"] = time.time() - start_total
+    return tid, frequent, timings
+
+
+def log_experiment(result_dir, config, timings, tid_stats, dataset_summary):
+    os.makedirs(result_dir, exist_ok=True)
+
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "config": config,
+        "timings": timings,
+        "tid_statistics": tid_stats,
+        "dataset_summary": dataset_summary
+    }
+
+    log_path = os.path.join(result_dir, "experiment_log.json")
+
+    # Read existing logs if available
+    if os.path.exists(log_path):
+        with open(log_path, "r") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = []
+    else:
+        data = []
+
+    if not isinstance(data, list):
+        data = [data]
+
+    data.append(record)
+
+    # convert NumPy types to native Python types
+    def convert_np(obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        return obj
+
+    with open(log_path, "w") as f:
+        json.dump(data, f, indent=4, default=convert_np)
+
+    print(f"\n🧾 Logged experiment to {log_path}")
+
+
 def main():
-    """
-    Main function to run YOUR TID implementation on Instacart data.
-    """
-    # Check if data directory exists
-    data_dir = "../data"
-    if not os.path.exists(data_dir):
-        print(f"\nData directory not found: {data_dir}")
-        return
-    
-    # Load data
+    data_dir = "../../data"
+    result_dir = "results"
+    os.makedirs(result_dir, exist_ok=True)
+
+    # Experiment config
+    config = {
+        "dataset": "prior",
+        "data_dir": data_dir,
+        "min_support": 0.002,
+        "max_k": 5,
+    }
+
+    print("\n===== Starting TID Experiment =====")
+
+    # --- Load data ---
+    t0 = time.time()
     data = load_instacart_data(data_dir)
-    
-    if not data:
-        print("\nNo data loaded. Please check your data directory.")
-        return
-    
-    # Print dataset overview
-    print("\n" + "="*60)
-    print("Dataset Overview")
-    print("="*60)
-    print(f"Total orders: {len(data['orders']):,}")
-    print(f"Unique users: {data['orders']['user_id'].nunique():,}")
-    print(f"Total products: {len(data['products']):,}")
-    print(f"Prior order products: {len(data['order_products_prior']):,}")
-    if 'order_products_train' in data:
-        print(f"Train order products: {len(data['order_products_train']):,}")
-    
-    transaction_df_full = get_transaction_dataframe(
-        data, 
-        dataset='prior',
-        max_orders=None,  # Use ALL orders
-        verbose=True
-    )
-    
-    tid_full, frequent_full = run_tid_analysis(
-        transaction_df_full,
-        min_support=0.002,  # 0.2% support (from paper)
-        max_k=5,
+    t_load = time.time() - t0
+
+    transaction_df = get_transaction_dataframe(data, dataset=config["dataset"], verbose=True)
+
+    # --- Run TID analysis ---
+    tid, frequent, timings = run_tid_analysis(
+        transaction_df,
+        min_support=config["min_support"],
+        max_k=config["max_k"],
         data=data,
         verbose=True
     )
-    
-    # Save for later use
-    tid_full.save('tid_full.pkl')
+
+    # Combine timing info
+    total_time = t_load + timings["total_runtime_seconds"]
+    timings = {"load_data_seconds": t_load, **timings, "total_experiment_seconds": total_time}
+
+    tid_stats = tid.get_statistics()
+    dataset_summary = {
+        "orders": transaction_df["order_id"].nunique(),
+        "unique_products": transaction_df["product_id"].nunique(),
+        "total_records": len(transaction_df)
+    }
+
+    # --- Log everything ---
+    log_experiment(result_dir, config, timings, tid_stats, dataset_summary)
+
+    # Save current TID structure
+    tid.save(os.path.join(result_dir, f"tid_{config['dataset']}.pkl"))
 
 
 if __name__ == "__main__":

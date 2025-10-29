@@ -287,8 +287,7 @@ class TID:
         return tid
 
 
-def mine_frequent_itemsets(tid: TID, min_support: float, max_k: int = 10, 
-                          verbose: bool = True) -> Dict[int, List[Tuple[FrozenSet[int], int]]]:
+def mine_frequent_itemsets(tid: TID, min_support: float, max_k: int = 10, verbose: bool = True) -> Dict[int, List[Tuple[FrozenSet[int], int]]]:
     """
     Mine frequent itemsets using the TID structure.
     
