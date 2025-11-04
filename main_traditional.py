@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """
 Traditional Single-Threaded Apriori Algorithm Implementation
-COS 781 Data Mining Project - Group 16
 
-This script implements the traditional single-threaded Apriori algorithm
-for association rule mining on the Instacart Market Basket Analysis dataset.
-Results are saved as JSON files for further analysis.
+Runs Apriori on the Instacart Market Basket Analysis dataset and saves JSON results.
 """
 
 import pandas as pd
@@ -31,7 +28,7 @@ def load_config():
         print("Warning: config.json not found, using default configuration")
         return {
             "dataset_config": {"sample_size": 5000, "max_items": 1000, "chunk_size": 5000},
-            "apriori_config": {"support_thresholds": [0.15, 0.2, 0.25, 0.3], "min_threshold": 1.0},
+            "apriori_config": {"support_thresholds": [0.0015, 0.002, 0.0025, 0.003], "min_threshold": 1.0},
             "output_config": {"save_individual_results": True, "save_summary": True, "results_directory": "results"}
         }
     except json.JSONDecodeError as e:
@@ -39,33 +36,30 @@ def load_config():
         print("Using default configuration")
         return {
             "dataset_config": {"sample_size": 5000, "max_items": 1000, "chunk_size": 5000},
-            "apriori_config": {"support_thresholds": [0.15, 0.2, 0.25, 0.3], "min_threshold": 1.0},
+            "apriori_config": {"support_thresholds": [0.0015, 0.002, 0.0025, 0.003], "min_threshold": 1.0},
             "output_config": {"save_individual_results": True, "save_summary": True, "results_directory": "results"}
         }
 
 
 def main():
     """
-    Main function to run traditional single-threaded Apriori algorithm
-    on the Instacart dataset and save results as JSON.
+    Run single-threaded Apriori on Instacart and save JSON results (no author metadata).
     """
-    # Start total execution timer
     total_start_time = time.time()
-    
+
     print("="*80)
     print("TRADITIONAL SINGLE-THREADED APRIORI ALGORITHM")
-    print("COS 781 Data Mining Project - Group 16")
     print("="*80)
-    
+
     # Load configuration
     config_start_time = time.time()
     config = load_config()
     config_time = time.time() - config_start_time
-    
+
     dataset_config = config["dataset_config"]
     apriori_config = config["apriori_config"]
     output_config = config["output_config"]
-    
+
     print(f"\nConfiguration:")
     if dataset_config.get('use_full_dataset', False):
         print(f"- Dataset: FULL dataset (no sampling)")
@@ -74,15 +68,15 @@ def main():
     print(f"- Max items: {dataset_config['max_items']:,} items")
     print(f"- Support thresholds: {apriori_config['support_thresholds']}")
     print(f"- Configuration load time: {config_time:.4f} seconds")
-    
-    # Load and prepare the Instacart dataset
+
+    # Load dataset
     print("\n1. Loading Instacart Market Basket Analysis dataset...")
     data_load_start_time = time.time()
-    
+
     if dataset_config.get('use_full_dataset', False):
         print("Using FULL dataset (no sampling)...")
         market_basket = load_instacart_data(
-            sample_size=None,  # No sampling
+            sample_size=None,
             max_items=dataset_config['max_items']
         )
     else:
@@ -91,54 +85,51 @@ def main():
             sample_size=dataset_config['sample_size'],
             max_items=dataset_config['max_items']
         )
-    
+
     data_load_time = time.time() - data_load_start_time
-    
+
     print(f"Dataset loaded successfully!")
     print(f"Shape: {market_basket.shape}")
     print(f"Columns: {market_basket.columns.tolist()}")
     print(f"Data loading time: {data_load_time:.4f} seconds")
-    
-    # Display basic statistics
+
+    # Basic stats
     print(f"\nDataset Statistics:")
     print(f"- Total transactions: {len(market_basket)}")
     print(f"- Unique users: {market_basket['user_id'].nunique()}")
     print(f"- Unique products: {market_basket['product_id'].nunique()}")
     print(f"- Unique orders: {market_basket['order_id'].nunique()}")
-    
-    # Transform data for Apriori algorithm
+
+    # Transform data
     print("\n2. Transforming data for Apriori algorithm...")
     transform_start_time = time.time()
     basket_encoded, basket = transform_basket(market_basket)
     transform_time = time.time() - transform_start_time
-    
+
     print(f"Basket transformation completed!")
     print(f"Encoded basket shape: {basket_encoded.shape}")
     print(f"Data transformation time: {transform_time:.4f} seconds")
-    
-    # Run Apriori algorithm with different support thresholds
+
+    # Run Apriori
     print("\n3. Running Apriori algorithm...")
-    
     support_thresholds = apriori_config['support_thresholds']
     min_threshold = apriori_config['min_threshold']
     all_results = {}
     apriori_total_time = 0
-    
+
     for min_support in support_thresholds:
         print(f"\nRunning Apriori with min_support = {min_support}")
         print("-" * 50)
-        
-        # Run Apriori algorithm with timing
+
         apriori_start_time = time.time()
         frequent_itemsets, rules, sorted_rules = run_apriori_algorithm(
-            basket_encoded, 
-            min_support=min_support, 
+            basket_encoded,
+            min_support=min_support,
             min_threshold=min_threshold
         )
         apriori_time = time.time() - apriori_start_time
         apriori_total_time += apriori_time
-        
-        # Store results with timing
+
         all_results[f"support_{min_support}"] = {
             "min_support": min_support,
             "frequent_itemsets_count": len(frequent_itemsets),
@@ -147,27 +138,19 @@ def main():
             "top_rules": sorted_rules.head(20).to_dict('records') if len(sorted_rules) > 0 else [],
             "execution_time_seconds": apriori_time
         }
-        
+
         print(f"Found {len(frequent_itemsets)} frequent itemsets")
         print(f"Generated {len(rules)} association rules")
         print(f"Execution time: {apriori_time:.4f} seconds")
-    
-    # Calculate total execution time
+
     total_time = time.time() - total_start_time
-    
-    # Add metadata with comprehensive timing information
+
+    # Minimal, algorithm-focused metadata (no authors/group)
     results_metadata = {
         "experiment_info": {
             "algorithm": "Traditional Single-Threaded Apriori",
             "dataset": "Instacart Market Basket Analysis",
             "timestamp": datetime.now().isoformat(),
-            "group": "Group 16",
-            "members": [
-                "Rueben van der Westhuize (u21434809)",
-                "Kenneth Collis (u23897300)", 
-                "Marcel le Roux (u22598805)",
-                "Stefan Tolken (u22525778)"
-            ],
             "configuration": config
         },
         "dataset_info": {
@@ -183,22 +166,20 @@ def main():
             "data_loading_time_seconds": data_load_time,
             "data_transformation_time_seconds": transform_time,
             "apriori_total_time_seconds": apriori_total_time,
-            "results_saving_time_seconds": 0,  # Will be updated after saving
+            "results_saving_time_seconds": 0,
             "throughput_transactions_per_second": len(market_basket) / total_time,
             "throughput_orders_per_second": dataset_config['sample_size'] / total_time
         },
         "results": all_results
     }
-    
-    # Save results to JSON
+
     print("\n4. Saving results to JSON files...")
     save_start_time = time.time()
     save_results_to_json(results_metadata)
     save_time = time.time() - save_start_time
-    
-    # Update the saving time in results
+
     results_metadata["performance_metrics"]["results_saving_time_seconds"] = save_time
-    
+
     print(f"Results saving time: {save_time:.4f} seconds")
     print("\n" + "="*80)
     print("ANALYSIS COMPLETED SUCCESSFULLY!")
@@ -214,4 +195,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()  
+    main()
+
+

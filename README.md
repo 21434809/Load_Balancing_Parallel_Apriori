@@ -9,7 +9,7 @@ This project implements the traditional single-threaded Apriori algorithm for fr
 ## Features
 
 - Traditional single-threaded Apriori algorithm implementation
-- Support for configurable minimum support thresholds (0.15-0.3%)
+- Support for configurable minimum support thresholds (0.15–0.3% expressed as 0.0015–0.003)
 - JSON output for results analysis
 - Efficient handling of large datasets (3.4M+ transactions)
 - Association rule mining with lift, confidence, and support metrics
@@ -22,6 +22,25 @@ The project uses the Instacart Market Basket Analysis dataset:
 - **Sparsity**: ~10 products per order (typical for retail data)
 - **Files**: orders.csv, products.csv, order_products__prior.csv, etc.
 
+### Download dataset automatically
+Use the helper script to download and place the files into `data/`.
+
+```bash
+# Ensure your virtual environment is active
+
+# Install KaggleHub (one-time)
+pip install kagglehub
+
+# Run from the src directory so files are placed in ../data
+cd src
+python download_dataset.py
+cd ..
+```
+
+Notes:
+- If authentication is required, configure Kaggle API credentials (see `https://www.kaggle.com/docs/api`).
+- After the script completes, verify `data/` contains CSVs like `orders.csv`, `products.csv`, `order_products__prior.csv`.
+
 ## Installation
 
 1. Clone the repository:
@@ -30,33 +49,37 @@ git clone <your-repo-url>
 cd Load_Balancing_Parallel_Apriori
 ```
 
-2. Install required dependencies:
+2. (Recommended) Create and activate a virtual environment:
+```bash
+# Windows PowerShell
+python -m venv venv
+./venv/Scripts/Activate.ps1
+
+# macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Install required dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Ensure the Instacart dataset is in the `data/` directory
+4. Ensure the Instacart dataset is in the `data/` directory
 
 ## Usage
 
 ### Main Analysis
 Run the complete analysis with JSON output:
 ```bash
-python main.py
-```
-
-### Example Usage
-Run the example script to see basic functionality:
-```bash
-python example_usage.py
+python main_traditional.py
 ```
 
 ## Project Structure
 
 ```
 Load_Balancing_Parallel_Apriori/
-├── main.py                 # Main execution script
-├── example_usage.py       # Example usage demonstration
+├── main_traditional.py    # Baseline traditional Apriori execution script
 ├── src/
 │   └── apriori.py         # Traditional Apriori implementation
 ├── data/                  # Instacart dataset files
