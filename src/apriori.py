@@ -134,7 +134,7 @@ def run_apriori_algorithm(basket_encoded, min_support=0.01, min_threshold=1.0):
     return frequent_itemsets, rules, sorted_rules
 
 
-def save_results_to_json(results_metadata):
+def save_results_to_json(results_metadata, tag: str = None, results_dir: str = 'results', suffix: str = ""):
     """
     Save analysis results to JSON files.
     
@@ -142,16 +142,21 @@ def save_results_to_json(results_metadata):
         results_metadata (dict): Complete results metadata to save
     """
     # Create results directory if it doesn't exist
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
     
+    # Optional tag prefix for filenames
+    prefix = f"{tag}_" if tag else ""
+    suffix = suffix or ""
+
     # Save complete results
-    with open('results/complete_analysis.json', 'w') as f:
+    complete_path = os.path.join(results_dir, f"{prefix}complete_analysis{suffix}.json")
+    with open(complete_path, 'w') as f:
         json.dump(results_metadata, f, indent=2, default=str)
     
     # Save individual result files for each support threshold
     for support_key, support_data in results_metadata['results'].items():
-        filename = f"results/apriori_results_{support_key}.json"
-        with open(filename, 'w') as f:
+        indiv_path = os.path.join(results_dir, f"{prefix}apriori_results_{support_key}{suffix}.json")
+        with open(indiv_path, 'w') as f:
             json.dump(support_data, f, indent=2, default=str)
     
     # Save summary results
@@ -168,13 +173,14 @@ def save_results_to_json(results_metadata):
         }
     }
     
-    with open('results/analysis_summary.json', 'w') as f:
+    summary_path = os.path.join(results_dir, f"{prefix}analysis_summary{suffix}.json")
+    with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2, default=str)
     
     print("Results saved to:")
-    print("- results/complete_analysis.json (complete results)")
-    print("- results/analysis_summary.json (summary)")
-    print("- results/apriori_results_support_*.json (individual support thresholds)")
+    print(f"- {complete_path} (complete results)")
+    print(f"- {summary_path} (summary)")
+    print(f"- {results_dir}/{prefix}apriori_results_support_*{suffix}.json (individual support thresholds)")
 
 
 def load_large_dataset_chunked(sample_size=20000, max_items=2000, chunk_size=5000):
