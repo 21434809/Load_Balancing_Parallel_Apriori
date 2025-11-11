@@ -43,3 +43,6 @@ Thumbs.db
 
 # Data files (if too large)
 data/*.csv
+
+# Results folders
+/results

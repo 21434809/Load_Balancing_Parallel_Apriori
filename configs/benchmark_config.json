@@ -1,0 +1,49 @@
+{
+  "description": "Single unified config - works for both regular benchmarks and processor scaling",
+  "_comment": "This is the ONLY config file you need!",
+
+  "dataset": {
+    "sample_size": 90000,
+    "max_items": 5000,
+    "chunk_size": 10000,
+    "random_seed": 42,
+    "_comment": "Adjust sample_size and max_items based on your needs"
+  },
+
+  "algorithms": {
+    "traditional": {
+      "enabled": true,
+      "name": "Traditional Single-Threaded Apriori",
+      "method": "mlxtend",
+      "_comment": "Provides baseline for speedup calculations. May fail on large datasets due to memory."
+    },
+    "naive_parallel": {
+      "enabled": true,
+      "name": "Naive Parallel Apriori",
+      "num_workers": 4,
+      "_comment": "Keep as single number for comparison baseline"
+    },
+    "wdpa": {
+      "enabled": true,
+      "name": "WDPA Parallel Apriori",
+      "strategies": ["BL", "CL", "BWT", "CWT"],
+      "num_processors": [1, 2, 4, 8, 16],
+      "max_k": 5,
+      "_comment_processors": "Use single number (4) for regular benchmark, or array [2,4,8] for processor scaling"
+    }
+  },
+
+  "mining_parameters": {
+    "support_thresholds": [0.002],
+    "min_confidence": 0.5,
+    "min_lift": 1.0,
+    "_comment": "Lower support = more patterns found but slower. Start with [0.01] for quick tests."
+  },
+
+  "output": {
+    "results_directory": "results/benchmark",
+    "save_individual_results": true,
+    "save_comparison_summary": true,
+    "generate_speedup_metrics": true
+  }
+}
