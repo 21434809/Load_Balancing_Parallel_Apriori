@@ -21,17 +21,31 @@ class UnifiedDataLoader:
     Loads data once and prepares it for all algorithm types.
     """
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, algorithms_config: Dict = None):
         """
         Args:
             config: Dataset configuration with keys:
                 - sample_size: Number of orders to sample
                 - max_items: Maximum number of unique products to keep
                 - random_seed: Random seed for reproducibility
+            algorithms_config: Optional algorithms configuration to determine what to load
         """
         self.sample_size = config.get('sample_size', 10000)
         self.max_items = config.get('max_items', 500)
         self.random_seed = config.get('random_seed', 42)
+
+        # Determine what data structures we need to create
+        self.need_basket_matrix = True  # Default to True for backwards compatibility
+        self.need_tid = True  # Default to True for backwards compatibility
+
+        if algorithms_config:
+            # Only create basket matrix if traditional or naive_parallel is enabled
+            self.need_basket_matrix = (
+                algorithms_config.get('traditional', {}).get('enabled', False) or
+                algorithms_config.get('naive_parallel', {}).get('enabled', False)
+            )
+            # Only create TID if WDPA is enabled
+            self.need_tid = algorithms_config.get('wdpa', {}).get('enabled', False)
 
         # Will be populated by load()
         self.market_basket = None  # Raw transaction data
@@ -56,6 +70,8 @@ class UnifiedDataLoader:
             print(f"Sample size: {self.sample_size:,} orders")
             print(f"Max items: {self.max_items:,} products")
             print(f"Random seed: {self.random_seed}")
+            print(f"Will create basket matrix: {self.need_basket_matrix}")
+            print(f"Will create TID structure: {self.need_tid}")
 
         # Step 1: Load raw data
         if verbose:
@@ -70,28 +86,40 @@ class UnifiedDataLoader:
             print(f"  Unique products: {self.market_basket['product_id'].nunique():,}")
             print(f"  Time: {self.load_time:.2f}s")
 
-        # Step 2: Create binary basket matrix (for Traditional & Naive)
-        if verbose:
-            print("\n[2/3] Creating binary basket matrix...")
-        transform_start = time.time()
-        self.basket_encoded = self._create_basket_matrix(verbose)
-        self.transform_time = time.time() - transform_start
+        # Step 2: Create binary basket matrix (for Traditional & Naive) - CONDITIONAL
+        if self.need_basket_matrix:
+            if verbose:
+                print("\n[2/3] Creating binary basket matrix...")
+            transform_start = time.time()
+            self.basket_encoded = self._create_basket_matrix(verbose)
+            self.transform_time = time.time() - transform_start
+
+            if verbose:
+                print(f"  Shape: {self.basket_encoded.shape}")
+                print(f"  Time: {self.transform_time:.2f}s")
+        else:
+            if verbose:
+                print("\n[2/3] Skipping binary basket matrix (not needed for enabled algorithms)")
+            self.transform_time = 0.0
+
+        # Step 3: Build TID structure (for WDPA) - CONDITIONAL
+        if self.need_tid:
+            if verbose:
+                print("\n[3/3] Building TID structure...")
+            tid_start = time.time()
+            self.tid = self._build_tid_structure(verbose)
+            self.tid_build_time = time.time() - tid_start
+
+            if verbose:
+                print(f"  Total transactions: {self.tid.total_transactions:,}")
+                print(f"  Unique items: {len(self.tid.item_to_tids):,}")
+                print(f"  Time: {self.tid_build_time:.2f}s")
+        else:
+            if verbose:
+                print("\n[3/3] Skipping TID structure (not needed for enabled algorithms)")
+            self.tid_build_time = 0.0
 
         if verbose:
-            print(f"  Shape: {self.basket_encoded.shape}")
-            print(f"  Time: {self.transform_time:.2f}s")
-
-        # Step 3: Build TID structure (for WDPA)
-        if verbose:
-            print("\n[3/3] Building TID structure...")
-        tid_start = time.time()
-        self.tid = self._build_tid_structure(verbose)
-        self.tid_build_time = time.time() - tid_start
-
-        if verbose:
-            print(f"  Total transactions: {self.tid.total_transactions:,}")
-            print(f"  Unique items: {len(self.tid.item_to_tids):,}")
-            print(f"  Time: {self.tid_build_time:.2f}s")
             print("\n" + "="*80)
             print("DATA LOADING COMPLETE")
             print(f"Total time: {self.load_time + self.transform_time + self.tid_build_time:.2f}s")
@@ -105,9 +133,9 @@ class UnifiedDataLoader:
                 'total_transactions': len(self.market_basket),
                 'unique_orders': self.market_basket['order_id'].nunique(),
                 'unique_products': self.market_basket['product_id'].nunique(),
-                'basket_shape': self.basket_encoded.shape,
-                'tid_total_transactions': self.tid.total_transactions,
-                'tid_unique_items': len(self.tid.item_to_tids),
+                'basket_shape': self.basket_encoded.shape if self.basket_encoded is not None else None,
+                'tid_total_transactions': self.tid.total_transactions if self.tid is not None else None,
+                'tid_unique_items': len(self.tid.item_to_tids) if self.tid is not None else None,
                 'load_time': self.load_time,
                 'transform_time': self.transform_time,
                 'tid_build_time': self.tid_build_time
@@ -198,18 +226,19 @@ class UnifiedDataLoader:
         }
 
 
-def load_data_for_benchmark(config: Dict, verbose: bool = True) -> Dict:
+def load_data_for_benchmark(config: Dict, algorithms_config: Dict = None, verbose: bool = True) -> Dict:
     """
     Convenience function to load data for benchmark.
 
     Args:
         config: Dataset configuration
+        algorithms_config: Optional algorithms configuration to determine what to load
         verbose: Print progress
 
     Returns:
         Dictionary with all prepared data
     """
-    loader = UnifiedDataLoader(config)
+    loader = UnifiedDataLoader(config, algorithms_config=algorithms_config)
     return loader.load(verbose=verbose)
 
 

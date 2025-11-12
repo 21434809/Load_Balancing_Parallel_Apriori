@@ -6,6 +6,7 @@ Generates comprehensive graphs comparing Traditional, Naive, and WDPA algorithms
 """
 
 import json
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
@@ -16,7 +17,22 @@ sns.set_style("whitegrid")
 plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['font.size'] = 10
 
-benchmark_name = 'benchmark_90k'
+# Auto-detect latest benchmark
+def get_latest_benchmark():
+    """Find the most recent benchmark results directory."""
+    import glob
+    benchmark_dirs = glob.glob('results/benchmark_*/benchmark_results.json')
+    if not benchmark_dirs:
+        raise FileNotFoundError("No benchmark results found in results/ directory")
+    # Get the most recently modified
+    latest = max(benchmark_dirs, key=lambda x: os.path.getmtime(x))
+    # Extract directory name (e.g., 'benchmark_200k_001')
+    benchmark_name = os.path.basename(os.path.dirname(latest))
+    print(f"Auto-detected latest benchmark: {benchmark_name}")
+    return benchmark_name
+
+# benchmark_name = get_latest_benchmark()
+benchmark_name = 'benchmark_200k_002'
 
 def load_results(results_file=f'results/{benchmark_name}/benchmark_results.json'):
     """Load benchmark results from JSON file."""
@@ -813,6 +829,171 @@ def plot_processor_scaling_combined(results, processor_scaling, output_dir=f'res
     plt.close()
 
 
+def get_support_folder_name(min_support):
+    """Convert support threshold to folder name (e.g., 0.001 -> plot_010)"""
+    # Convert to percentage and remove decimal point
+    support_pct = int(min_support * 1000)  # e.g., 0.001 -> 1, 0.0008 -> 0.8
+
+    # Handle decimal cases
+    if min_support * 1000 == int(min_support * 1000):
+        # Clean integer percentage
+        return f"plot_{support_pct:03d}"
+    else:
+        # Has decimal, multiply by 10 to avoid decimals
+        support_pct = int(min_support * 10000)
+        return f"plot_{support_pct:04d}"
+
+
+def plot_wdpa_strategies_for_support(results, support_key, support_data, output_dir):
+    """Create WDPA strategy comparison plot for a specific support threshold."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    sample_size, max_items = get_dataset_info(results)
+    min_support = support_data.get('traditional', {}).get('min_support', 0)
+    if not min_support:
+        min_support = list(support_data.values())[0].get('min_support', 0)
+
+    strategies = ['BL', 'CL', 'BWT', 'CWT']
+    metrics = {
+        'Time (s)': [],
+        'Speedup': [],
+        'Efficiency (%)': []
+    }
+
+    for strategy in strategies:
+        key = f'wdpa_{strategy}'
+        data = support_data.get(key, {})
+        # Use computation_time if available, else total_time
+        metrics['Time (s)'].append(data.get('computation_time', data.get('total_time', 0)))
+        metrics['Speedup'].append(data.get('speedup_metrics', {}).get('speedup', 0))
+        metrics['Efficiency (%)'].append(data.get('speedup_metrics', {}).get('efficiency', 0) * 100)
+
+    # Create subplots
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    colors = ['#3498DB', '#2ECC71', '#F39C12', '#9B59B6']
+
+    # Plot 1: Execution Time
+    bars1 = axes[0].bar(strategies, metrics['Time (s)'], color=colors, alpha=0.8)
+    axes[0].set_ylabel('Execution Time (seconds)', fontweight='bold')
+    axes[0].set_title(f'Execution Time\n(Support: {min_support*100:.2f}%)', fontweight='bold')
+    axes[0].grid(axis='y', alpha=0.3)
+    for bar in bars1:
+        height = bar.get_height()
+        axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}s', ha='center', va='bottom', fontweight='bold')
+
+    # Plot 2: Speedup
+    bars2 = axes[1].bar(strategies, metrics['Speedup'], color=colors, alpha=0.8)
+    axes[1].set_ylabel('Speedup vs Traditional', fontweight='bold')
+    axes[1].set_title(f'Speedup\n(Support: {min_support*100:.2f}%)', fontweight='bold')
+    axes[1].axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
+    axes[1].grid(axis='y', alpha=0.3)
+    for bar in bars2:
+        height = bar.get_height()
+        axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}x', ha='center', va='bottom', fontweight='bold')
+
+    # Plot 3: Efficiency
+    bars3 = axes[2].bar(strategies, metrics['Efficiency (%)'], color=colors, alpha=0.8)
+    axes[2].set_ylabel('Efficiency (%)', fontweight='bold')
+    axes[2].set_title(f'Parallel Efficiency\n(Support: {min_support*100:.2f}%)', fontweight='bold')
+    axes[2].axhline(y=100, color='gray', linestyle='--', alpha=0.5, label='Ideal')
+    axes[2].grid(axis='y', alpha=0.3)
+    axes[2].set_ylim(0, 110)
+    for bar in bars3:
+        height = bar.get_height()
+        axes[2].text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.1f}%', ha='center', va='bottom', fontweight='bold')
+
+    plt.suptitle(f'WDPA Lattice Distribution Strategies Comparison\n(Sample Size: {sample_size:,} | Max Items: {max_items:,} | Support: {min_support*100:.2f}%)',
+                 fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/wdpa_strategies_comparison.png', dpi=300, bbox_inches='tight')
+    print(f"  Saved: {output_dir}/wdpa_strategies_comparison.png")
+    plt.close()
+
+
+def generate_plots_per_support(results_file=f'results/{benchmark_name}/benchmark_results.json'):
+    """Generate all original plots separately for each support threshold."""
+    print("="*80)
+    print("BENCHMARK RESULTS VISUALIZATION - PER SUPPORT THRESHOLD")
+    print("="*80)
+    print(f"Loading results from: {results_file}")
+
+    results = load_results(results_file)
+
+    sample_size, max_items = get_dataset_info(results)
+    print(f"Dataset: {sample_size:,} orders, {max_items:,} items")
+    print("-"*80)
+
+    # Check if processor scaling is enabled
+    processor_scaling = detect_processor_scaling(results)
+
+    if processor_scaling:
+        print(f"\n🔍 PROCESSOR SCALING MODE DETECTED")
+        print(f"   Processor counts: {processor_scaling}")
+        print(f"   Generating processor scaling plots for each support...\n")
+    else:
+        print(f"\n📊 REGULAR MODE")
+        print(f"   Generating all standard plots for each support...\n")
+
+    # Generate plots for each support threshold
+    support_thresholds = results['results_by_support'].keys()
+    print(f"Found {len(support_thresholds)} support thresholds")
+    print(f"Generating separate plot folders for each...\n")
+
+    for support_key, support_data in results['results_by_support'].items():
+        # Get the min_support value
+        min_support = support_data.get('traditional', {}).get('min_support', 0)
+        if not min_support:
+            min_support = list(support_data.values())[0].get('min_support', 0)
+
+        # Create folder name
+        folder_name = get_support_folder_name(min_support)
+        output_dir = f'results/{benchmark_name}/{folder_name}'
+
+        print(f"📊 Support {min_support*100:.2f}% -> {folder_name}/")
+
+        # Create the output directory
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Create a temporary results object with just this support threshold
+        single_support_results = {
+            'metadata': results['metadata'],
+            'results_by_support': {support_key: support_data}
+        }
+
+        # Generate all the original plots for this single support
+        if processor_scaling:
+            # Processor scaling mode
+            plot_traditional_failure_analysis(single_support_results, output_dir)
+            plot_processor_scaling_analysis(single_support_results, output_dir)
+        else:
+            # Regular mode - generate all standard plots
+            plot_execution_time_comparison(single_support_results, output_dir)
+            plot_speedup_comparison(single_support_results, output_dir)
+            plot_efficiency_comparison(single_support_results, output_dir)
+            plot_wdpa_strategies_detailed(single_support_results, output_dir)
+            plot_traditional_failure_analysis(single_support_results, output_dir)
+            plot_best_algorithm_summary(single_support_results, output_dir)
+
+        print()
+
+    print("-"*80)
+    print("\n✅ All per-support plots generated successfully!")
+    print("="*80)
+    print(f"\nView your plots in: results/{benchmark_name}/")
+    for support_key, support_data in results['results_by_support'].items():
+        min_support = support_data.get('traditional', {}).get('min_support', 0)
+        if not min_support:
+            min_support = list(support_data.values())[0].get('min_support', 0)
+        folder_name = get_support_folder_name(min_support)
+        print(f"  - {folder_name}/ (Support: {min_support*100:.2f}%)")
+
+    print("="*80)
+
+
 def generate_all_plots(results_file=f'results/{benchmark_name}/benchmark_results.json',
                        output_dir=f'results/{benchmark_name}/plots'):
     """Generate all visualization plots."""
@@ -876,4 +1057,5 @@ def generate_all_plots(results_file=f'results/{benchmark_name}/benchmark_results
 
 
 if __name__ == "__main__":
-    generate_all_plots()
+    # Generate separate plots for each support threshold
+    generate_plots_per_support()

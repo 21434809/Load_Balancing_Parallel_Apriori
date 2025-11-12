@@ -311,54 +311,77 @@ class WDPADistributor:
         return dict(distribution)
 
 
+# Global variable for worker processes (initialized once per process)
+_worker_tid_dict = None
+
+def worker_init(tid_dict):
+    """
+    Initialize worker process with TID dictionary.
+    This is called ONCE per worker process to avoid repeated pickling.
+
+    CRITICAL OPTIMIZATION:
+    Without this, ProcessPoolExecutor would pickle and unpickle tid_dict
+    on EVERY call to executor.map(), causing massive overhead that scales
+    with the number of processors. With a large TID dict (5000 items × 83k
+    transactions), this overhead can make parallelization SLOWER than serial!
+
+    By using an initializer, we pickle tid_dict only ONCE per worker process
+    when the pool is created, dramatically reducing overhead.
+    """
+    global _worker_tid_dict
+    _worker_tid_dict = tid_dict
+
 def worker_count_itemsets(args):
     """
     Worker function for parallel TID intersection.
-    
+
     This runs on each slave processor (P1, P2, P3, ...).
-    
+
     WHAT IT DOES:
     1. Receives a list of candidate itemsets
     2. For each itemset, performs TID intersection
     3. Counts support and filters by min_support
     4. Returns frequent itemsets back to master
-    
+
     Args:
-        args: Tuple of (itemsets, tid_dict, min_count, proc_id)
-        
+        args: Tuple of (itemsets, min_count, proc_id)
+
     Returns:
         List of (itemset, count) tuples for frequent itemsets
     """
-    itemsets, tid_dict, min_count, proc_id = args
-    
+    itemsets, min_count, proc_id = args
+
+    # Use global TID dict (set once during worker initialization)
+    tid_dict = _worker_tid_dict
+
     frequent_local = []
     intersections_performed = 0
-    
+
     for itemset in itemsets:
         items = list(itemset)
-        
+
         if items[0] not in tid_dict:
             continue
-        
+
         # Get first TID set
         result_tid = tid_dict[items[0]]
-        
+
         # Intersect with remaining items
         for item in items[1:]:
             if item not in tid_dict:
                 result_tid = set()
                 break
             result_tid = result_tid & tid_dict[item]
-            
+
             if not result_tid:
                 break
-        
+
         intersections_performed += 1
         count = len(result_tid)
-        
+
         if count >= min_count:
             frequent_local.append((itemset, count))
-    
+
     return frequent_local, intersections_performed
 
 
@@ -446,13 +469,18 @@ class WDPAParallelMiner:
         frequent_items = [item for item, count in frequent_1]
         frequent_k_minus_1 = [frozenset([item]) for item in frequent_items]
 
-        # Convert TID to dictionary (SHARED MEMORY - no pickle!)
+        # Convert TID to dictionary
         tid_dict = {item: tids for item, tids in self.tid.item_to_tids.items()}
 
         # ⚡ CREATE POOL ONCE - reuse across all levels!
+        # Use initializer to pass TID dict ONCE per worker (not on every call!)
         executor = None
         if self.num_processors > 1:
-            executor = ProcessPoolExecutor(max_workers=self.num_processors)
+            executor = ProcessPoolExecutor(
+                max_workers=self.num_processors,
+                initializer=worker_init,
+                initargs=(tid_dict,)
+            )
 
         try:
             # Levels 2 and beyond
@@ -499,8 +527,9 @@ class WDPAParallelMiner:
                 # Lower threshold for better parallelization (was 1000, now 100)
                 min_candidates_per_proc = 100
 
+                # Don't pass tid_dict - it's already in worker process memory!
                 worker_args = [
-                    (distribution.get(proc_id, []), tid_dict, self.min_count, proc_id)
+                    (distribution.get(proc_id, []), self.min_count, proc_id)
                     for proc_id in range(self.num_processors)
                 ]
 
@@ -531,9 +560,11 @@ class WDPAParallelMiner:
                         else:
                             print(f"  Sequential mode: {total_candidates:,} candidates")
 
-                    # Process all in main thread
+                    # Process all in main thread (set global tid dict manually)
+                    global _worker_tid_dict
+                    _worker_tid_dict = tid_dict
                     all_candidates = sum([distribution.get(i, []) for i in range(self.num_processors)], [])
-                    sequential_args = (all_candidates, tid_dict, self.min_count, 0)
+                    sequential_args = (all_candidates, self.min_count, 0)
                     computation_start = time.time()
                     results = [worker_count_itemsets(sequential_args)]
                     computation_time = time.time() - computation_start

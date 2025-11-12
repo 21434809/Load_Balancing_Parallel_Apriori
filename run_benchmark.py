@@ -119,35 +119,113 @@ def run_traditional_apriori(basket_encoded: pd.DataFrame, min_support: float, ve
         }
 
 
-def run_naive_apriori(basket_encoded: pd.DataFrame, min_support: float, num_workers: int, verbose: bool = True) -> Dict:
-    """Run naive parallel Apriori."""
+def run_naive_apriori(basket_encoded: pd.DataFrame, min_support: float, num_workers: int, verbose: bool = True, timeout: int = 3000) -> Dict:
+    """Run naive parallel Apriori with timeout protection."""
     if verbose:
         print(f"\n{'='*80}")
         print("NAIVE PARALLEL APRIORI")
         print(f"{'='*80}")
         print(f"Min support: {min_support*100:.2f}%")
         print(f"Workers: {num_workers}")
+        print(f"Timeout: {timeout}s")
+
+    # Memory check
+    n_rows, n_cols = basket_encoded.shape
+    estimated_memory_gb = (n_rows * n_cols * 1) / (1024**3)  # 1 byte per bool
+
+    if estimated_memory_gb > 10.0:
+        if verbose:
+            print(f"SKIPPED: Dataset too large for naive parallel")
+            print(f"   Estimated memory: {estimated_memory_gb:.1f} GiB")
+            print(f"   Dataset: {n_rows:,} transactions x {n_cols:,} items")
+            print(f"{'='*80}")
+
+        return {
+            'method': 'Naive Parallel Apriori',
+            'min_support': min_support,
+            'num_workers': num_workers,
+            'total_itemsets': 0,
+            'total_time': 0,
+            'status': 'skipped_memory',
+            'error_message': f'Dataset too large - requires ~{estimated_memory_gb:.1f} GiB'
+        }
 
     start_time = time.time()
 
-    # Run Naive Parallel Apriori
-    frequent_itemsets = run_naive_parallel_apriori(basket_encoded, min_support=min_support, num_workers=num_workers)
+    try:
+        # Run with timeout using multiprocessing
+        import signal
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-    total_time = time.time() - start_time
+        def run_with_timeout():
+            return run_naive_parallel_apriori(basket_encoded, min_support=min_support, num_workers=num_workers)
 
-    if verbose:
-        print(f"Found {len(frequent_itemsets)} frequent itemsets")
-        print(f"Total time: {total_time:.4f} seconds")
-        print(f"{'='*80}")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_with_timeout)
+            try:
+                frequent_itemsets = future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                future.cancel()
+                if verbose:
+                    print(f"TIMEOUT: Naive Parallel took longer than {timeout}s")
+                    print(f"{'='*80}")
 
-    return {
-        'method': 'Naive Parallel Apriori',
-        'min_support': min_support,
-        'num_workers': num_workers,
-        'total_itemsets': len(frequent_itemsets),
-        'total_time': total_time,
-        'frequent_itemsets': frequent_itemsets
-    }
+                return {
+                    'method': 'Naive Parallel Apriori',
+                    'min_support': min_support,
+                    'num_workers': num_workers,
+                    'total_itemsets': 0,
+                    'total_time': timeout,
+                    'status': 'timeout',
+                    'error_message': f'Exceeded {timeout}s timeout'
+                }
+
+        total_time = time.time() - start_time
+
+        if verbose:
+            print(f"Found {len(frequent_itemsets)} frequent itemsets")
+            print(f"Total time: {total_time:.4f} seconds")
+            print(f"{'='*80}")
+
+        return {
+            'method': 'Naive Parallel Apriori',
+            'min_support': min_support,
+            'num_workers': num_workers,
+            'total_itemsets': len(frequent_itemsets),
+            'total_time': total_time,
+            'frequent_itemsets': frequent_itemsets,
+            'status': 'success'
+        }
+
+    except MemoryError as e:
+        if verbose:
+            print(f"MEMORY ERROR: {str(e)}")
+            print(f"{'='*80}")
+
+        return {
+            'method': 'Naive Parallel Apriori',
+            'min_support': min_support,
+            'num_workers': num_workers,
+            'total_itemsets': 0,
+            'total_time': 0,
+            'status': 'memory_error',
+            'error_message': str(e)
+        }
+
+    except Exception as e:
+        if verbose:
+            print(f"ERROR: {str(e)}")
+            print(f"{'='*80}")
+
+        return {
+            'method': 'Naive Parallel Apriori',
+            'min_support': min_support,
+            'num_workers': num_workers,
+            'total_itemsets': 0,
+            'total_time': 0,
+            'status': 'error',
+            'error_message': str(e)
+        }
 
 
 def run_wdpa_strategy(tid, min_support: float, strategy: str, num_processors: int, max_k: int, verbose: bool = True) -> Dict:
@@ -227,10 +305,14 @@ def run_full_benchmark(config: Dict, verbose: bool = True):
         print(f"Timestamp: {datetime.now().isoformat()}")
         print(f"Dataset: {config['dataset']['sample_size']:,} orders, {config['dataset']['max_items']:,} items")
 
-    # Load data ONCE for all algorithms
+    # Load data ONCE for all algorithms (only creating needed structures)
     if verbose:
-        print("\nLoading data for all algorithms...")
-    data = load_data_for_benchmark(config['dataset'], verbose=verbose)
+        print("\nLoading data for enabled algorithms...")
+    data = load_data_for_benchmark(
+        config['dataset'],
+        algorithms_config=config['algorithms'],
+        verbose=verbose
+    )
 
     # Extract data
     basket_encoded = data['basket_encoded']
@@ -272,7 +354,8 @@ def run_full_benchmark(config: Dict, verbose: bool = True):
         # 2. Naive Parallel Apriori
         if config['algorithms']['naive_parallel']['enabled']:
             num_workers = config['algorithms']['naive_parallel']['num_workers']
-            naive_results = run_naive_apriori(basket_encoded, min_support, num_workers, verbose=verbose)
+            timeout = config['algorithms']['naive_parallel'].get('timeout', 3000)
+            naive_results = run_naive_apriori(basket_encoded, min_support, num_workers, verbose=verbose, timeout=timeout)
             support_results['naive_parallel'] = naive_results
 
             # Calculate speedup vs traditional (if available)
@@ -365,11 +448,19 @@ def run_full_benchmark(config: Dict, verbose: bool = True):
 
         results['results_by_support'][f'support_{min_support}'] = support_results
 
-    # Save results in sample-size-specific folder
+    # Save results in unique numbered folder
     sample_size = config['dataset']['sample_size']
     sample_size_k = sample_size // 1000  # Convert to K (e.g., 50000 -> 50k)
     base_output_dir = config['output']['results_directory']
-    output_dir = f"{base_output_dir}_{sample_size_k}k"
+
+    # Find next available run number
+    run_number = 1
+    while True:
+        output_dir = f"{base_output_dir}_{sample_size_k}k_{run_number:03d}"
+        if not os.path.exists(output_dir):
+            break
+        run_number += 1
+
     os.makedirs(output_dir, exist_ok=True)
 
     if verbose:
