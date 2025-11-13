@@ -32,7 +32,7 @@ def get_latest_benchmark():
     return benchmark_name
 
 # benchmark_name = get_latest_benchmark()
-benchmark_name = 'benchmark_200k_002'
+benchmark_name = 'benchmark_150k_001'
 
 def load_results(results_file=f'results/{benchmark_name}/benchmark_results.json'):
     """Load benchmark results from JSON file."""
