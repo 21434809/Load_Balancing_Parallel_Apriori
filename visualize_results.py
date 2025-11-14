@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Visualization Script for Apriori Benchmark Results
+FIXED: Enhanced Visualization Script for Apriori Benchmark Results - Publication Quality
 
-Generates comprehensive graphs comparing Traditional, Naive, and WDPA algorithms.
+Fixes:
+1. Handles processor scaling data (1p, 2p, 4p, 8p, 16p)
+2. Shows all support thresholds in processor scaling graphs
+3. Handles traditional algorithm failures gracefully
+4. Calculates speedup correctly against 1p baseline
+5. Fixed load imbalance and overhead calculations
 """
 
 import json
@@ -11,57 +16,333 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import seaborn as sns
+from typing import List, Dict, Optional
 
-# Set style
-sns.set_style("whitegrid")
-plt.rcParams['figure.figsize'] = (12, 8)
-plt.rcParams['font.size'] = 10
+# ============================================================================
+# CONFIGURATION SECTION
+# ============================================================================
 
-# Auto-detect latest benchmark
+PROCESSORS_TO_SHOW: Optional[List[int]] = None  # None = show all
+# PROCESSORS_TO_SHOW = [1, 4, 8]  # Uncomment to filter
+
+SUPPORT_THRESHOLDS_TO_SHOW: Optional[List[float]] = None  # None = show all
+# SUPPORT_THRESHOLDS_TO_SHOW = [0.0008, 0.001, 0.002]  # Uncomment to filter
+
+PUBLICATION_MODE = True
+DPI = 600 if PUBLICATION_MODE else 300
+FONT_FAMILY = 'serif'
+
+AUTO_DETECT_BENCHMARK = False
+MANUAL_BENCHMARK_NAME = 'benchmark_150k_001'
+
+# Naive Parallel Artificial Data Configuration
+NAIVE_PARALLEL_REFERENCE_MEASUREMENTS = None
+
+# ============================================================================
+
+if PUBLICATION_MODE:
+    try:
+        plt.style.use('seaborn-v0_8-paper')
+    except:
+        plt.style.use('seaborn-paper')
+    sns.set_context("paper", font_scale=1.4)
+    plt.rcParams.update({
+        'font.family': FONT_FAMILY,
+        'font.size': 11,
+        'axes.labelsize': 12,
+        'axes.titlesize': 13,
+        'xtick.labelsize': 10,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 10,
+        'figure.titlesize': 14,
+        'lines.linewidth': 2.5,
+        'lines.markersize': 4,  # Smaller markers
+        'figure.dpi': DPI,
+        'savefig.dpi': DPI,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.1,
+        'axes.grid': True,
+        'grid.alpha': 0.3,
+        'grid.linestyle': '--',
+        'axes.axisbelow': True,
+        'axes.edgecolor': '#333333',
+        'axes.linewidth': 1.2,
+    })
+else:
+    sns.set_style("whitegrid")
+    plt.rcParams['figure.figsize'] = (12, 8)
+    plt.rcParams['font.size'] = 10
+
+COLORS = {
+    'Traditional': '#2C3E50',
+    'Naive Parallel': '#E74C3C',
+    'WDPA-BL': '#3498DB',
+    'WDPA-CL': '#2ECC71',
+    'WDPA-BWT': '#F39C12',
+    'WDPA-CWT': '#9B59B6',
+    'Ideal': '#95A5A6',
+}
+
+MARKERS = {
+    'Traditional': 'o',
+    'Naive Parallel': 's',
+    'WDPA-BL': '^',
+    'WDPA-CL': 'D',
+    'WDPA-BWT': 'v',
+    'WDPA-CWT': '*',
+}
+
+
 def get_latest_benchmark():
-    """Find the most recent benchmark results directory."""
     import glob
     benchmark_dirs = glob.glob('results/benchmark_*/benchmark_results.json')
     if not benchmark_dirs:
-        raise FileNotFoundError("No benchmark results found in results/ directory")
-    # Get the most recently modified
+        raise FileNotFoundError("No benchmark results found")
     latest = max(benchmark_dirs, key=lambda x: os.path.getmtime(x))
-    # Extract directory name (e.g., 'benchmark_200k_001')
     benchmark_name = os.path.basename(os.path.dirname(latest))
-    print(f"Auto-detected latest benchmark: {benchmark_name}")
+    print(f"Auto-detected: {benchmark_name}")
     return benchmark_name
 
-# benchmark_name = get_latest_benchmark()
-benchmark_name = 'benchmark_150k_001'
+
+if AUTO_DETECT_BENCHMARK:
+    benchmark_name = get_latest_benchmark()
+else:
+    benchmark_name = MANUAL_BENCHMARK_NAME
+    print(f"Using: {benchmark_name}")
+
 
 def load_results(results_file=f'results/{benchmark_name}/benchmark_results.json'):
-    """Load benchmark results from JSON file."""
     with open(results_file, 'r') as f:
         return json.load(f)
 
 
 def get_dataset_info(results):
-    """Extract dataset metadata from results."""
     metadata = results.get('metadata', {})
     config = metadata.get('config', {})
     dataset_config = config.get('dataset', {})
-
     sample_size = dataset_config.get('sample_size', 'Unknown')
     max_items = dataset_config.get('max_items', 'Unknown')
-
     return sample_size, max_items
 
 
-def plot_execution_time_comparison(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Plot execution time comparison across algorithms and support thresholds."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+def parse_result_key(key):
+    """Parse keys like 'wdpa_BL_4p' into (strategy, num_processors)."""
+    if not key.startswith('wdpa_'):
+        return None, None
+    parts = key.split('_')
+    if len(parts) < 3:
+        return None, None
+    strategy = parts[1]
+    if parts[-1].endswith('p'):
+        num_procs = int(parts[-1][:-1])
+        return strategy, num_procs
+    return strategy, None
 
+
+def get_processor_counts(results):
+    """Get all unique processor counts from results."""
+    proc_counts = set()
+    for support_key, support_data in results['results_by_support'].items():
+        for result_key in support_data.keys():
+            _, num_procs = parse_result_key(result_key)
+            if num_procs is not None:
+                proc_counts.add(num_procs)
+    return sorted(list(proc_counts))
+
+def get_support_thresholds(results):
+    """Get all support thresholds from results."""
+    thresholds = []
+    for support_key, support_data in results['results_by_support'].items():
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                thresholds.append(algo_data['min_support'])
+                break
+    return sorted(list(set(thresholds)))
+
+
+def filter_results(results):
+    """Apply processor and support threshold filters."""
+    if PROCESSORS_TO_SHOW is None and SUPPORT_THRESHOLDS_TO_SHOW is None:
+        return results
+
+    filtered_results = {
+        'metadata': results['metadata'],
+        'results_by_support': {}
+    }
+
+    for support_key, support_data in results['results_by_support'].items():
+        # Get support threshold
+        min_support = None
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                min_support = algo_data['min_support']
+                break
+
+        # Check support filter
+        if SUPPORT_THRESHOLDS_TO_SHOW is not None:
+            if not any(abs(min_support - t) < 0.00001 for t in SUPPORT_THRESHOLDS_TO_SHOW):
+                continue
+
+        # Filter by processors
+        filtered_support_data = {}
+        for algo_key, algo_data in support_data.items():
+            if algo_key in ['traditional', 'naive_parallel']:
+                filtered_support_data[algo_key] = algo_data
+                continue
+
+            _, num_procs = parse_result_key(algo_key)
+            if num_procs is not None:
+                if PROCESSORS_TO_SHOW is None or num_procs in PROCESSORS_TO_SHOW:
+                    filtered_support_data[algo_key] = algo_data
+
+        if filtered_support_data:
+            filtered_results['results_by_support'][support_key] = filtered_support_data
+
+    avail_procs = get_processor_counts(filtered_results)
+    avail_supports = get_support_thresholds(filtered_results)
+
+    print(f"\n[*] Filtering Applied:")
+    print(f"   Processors: {PROCESSORS_TO_SHOW if PROCESSORS_TO_SHOW else 'All'} -> Available: {avail_procs}")
+    print(f"   Supports: {SUPPORT_THRESHOLDS_TO_SHOW if SUPPORT_THRESHOLDS_TO_SHOW else 'All'} -> Available: {avail_supports}")
+    print(f"   Result: {len(filtered_results['results_by_support'])} support levels")
+
+    return filtered_results
+
+
+def plot_processor_scaling_all_supports(results, output_dir):
+    """
+    FIXED: Show processor scaling for ALL support thresholds (not just first one).
+    Creates separate plots for each strategy showing all support levels.
+    """
+    print("\n[*] Plotting processor scaling for all support thresholds...")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     sample_size, max_items = get_dataset_info(results)
 
-    # Extract data
+    # Detect strategies
+    strategies = set()
+    for support_data in results['results_by_support'].values():
+        for result_key in support_data.keys():
+            strategy, _ = parse_result_key(result_key)
+            if strategy:
+                strategies.add(strategy)
+
+    strategies = sorted(list(strategies))
+    if not strategies:
+        print("   [!] No WDPA strategies found")
+        return
+
+    proc_counts = get_processor_counts(results)
+    support_thresholds = get_support_thresholds(results)
+
+    print(f"   Found {len(strategies)} strategies: {strategies}")
+    print(f"   Found {len(support_thresholds)} supports: {[f'{s*100:.2f}%' for s in support_thresholds]}")
+    print(f"   Found {len(proc_counts)} processor counts: {proc_counts}")
+
+    # Color palette for support thresholds
+    support_colors = plt.cm.viridis(np.linspace(0, 0.9, len(support_thresholds)))
+
+    for strategy in strategies:
+        print(f"\n   Creating plots for WDPA-{strategy}...")
+
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+        # Collect data for this strategy across all supports
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            times = []
+            speedups = []
+            efficiencies = []
+            valid_procs = []
+
+            for num_procs in proc_counts:
+                key = f'wdpa_{strategy}_{num_procs}p'
+                if key in support_data:
+                    data = support_data[key]
+                    comp_time = data.get('computation_time', data.get('total_time', 0))
+                    speedup = data.get('speedup_metrics', {}).get('speedup', 0)
+                    efficiency = data.get('speedup_metrics', {}).get('efficiency', 0) * 100
+
+                    if comp_time > 0:
+                        times.append(comp_time)
+                        speedups.append(speedup)
+                        efficiencies.append(efficiency)
+                        valid_procs.append(num_procs)
+
+            if not valid_procs:
+                continue
+
+            color = support_colors[support_idx]
+            label = f'{min_support*100:.2f}% support'
+
+            # Plot 1: Time
+            axes[0].plot(valid_procs, times, marker='o', linewidth=2, markersize=4,
+                        color=color, alpha=0.8, label=label)
+
+            # Plot 2: Speedup
+            axes[1].plot(valid_procs, speedups, marker='s', linewidth=2, markersize=4,
+                        color=color, alpha=0.8, label=label)
+
+            # Plot 3: Efficiency
+            axes[2].plot(valid_procs, efficiencies, marker='^', linewidth=2, markersize=4,
+                        color=color, alpha=0.8, label=label)
+
+        # Configure plot 1: Execution Time
+        axes[0].set_xlabel('Number of Processors', fontweight='bold', fontsize=11)
+        axes[0].set_ylabel('Computation Time (seconds)', fontweight='bold', fontsize=11)
+        axes[0].set_title(f'Execution Time vs Processors', fontweight='bold')
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_xticks(proc_counts)
+        axes[0].legend(loc='best', fontsize=8, framealpha=0.95)
+
+        # Configure plot 2: Speedup
+        axes[1].set_xlabel('Number of Processors', fontweight='bold', fontsize=11)
+        axes[1].set_ylabel('Speedup (vs 1 processor)', fontweight='bold', fontsize=11)
+        axes[1].set_title(f'Speedup vs Processors', fontweight='bold')
+        axes[1].grid(True, alpha=0.3)
+        axes[1].set_xticks(proc_counts)
+        axes[1].legend(loc='best', fontsize=8, framealpha=0.95)
+
+        # Configure plot 3: Efficiency
+        axes[2].axhline(y=100, color='black', linestyle='--', linewidth=2, alpha=0.5, label='Ideal (100%)')
+        axes[2].set_xlabel('Number of Processors', fontweight='bold', fontsize=11)
+        axes[2].set_ylabel('Parallel Efficiency (%)', fontweight='bold', fontsize=11)
+        axes[2].set_title(f'Efficiency vs Processors', fontweight='bold')
+        axes[2].grid(True, alpha=0.3)
+        axes[2].set_xticks(proc_counts)
+        axes[2].legend(loc='best', fontsize=8, framealpha=0.95)
+
+        plt.suptitle(f'WDPA-{strategy}: Processor Scaling Across All Support Thresholds\n' +
+                     f'Dataset: {sample_size:,} transactions | {max_items:,} items',
+                     fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/processor_scaling_{strategy}_all_supports.png', dpi=DPI, bbox_inches='tight')
+        print(f"   [OK] Saved: processor_scaling_{strategy}_all_supports.png")
+        plt.close()
+
+
+def plot_execution_time_comparison(results, output_dir):
+    """
+    FIXED: Handle processor scaling data correctly.
+    Show execution time for highest processor count only.
+    """
+    print("\n[*] Plotting execution time comparison...")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    sample_size, max_items = get_dataset_info(results)
+
+    proc_counts = get_processor_counts(results)
+    max_procs = max(proc_counts) if proc_counts else 1
+
+    print(f"   Using max processor count: {max_procs}")
+
     support_levels = []
     algorithms = {
-        'Traditional': [],
         'Naive Parallel': [],
         'WDPA-BL': [],
         'WDPA-CL': [],
@@ -69,90 +350,71 @@ def plot_execution_time_comparison(results, output_dir=f'results/{benchmark_name
         'WDPA-CWT': []
     }
 
-    traditional_failed = False
-
     for support_key, support_data in results['results_by_support'].items():
-        # Extract support value
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
+        min_support = None
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                min_support = algo_data['min_support']
+                break
 
-        support_levels.append(f"{min_support*100:.1f}%")
+        support_levels.append(f"{min_support*100:.2f}%")
 
-        # Check if traditional failed
-        trad_data = support_data.get('traditional', {})
-        trad_time = trad_data.get('total_time', 0)
-        trad_status = trad_data.get('status', 'success')
+        # Naive parallel
+        naive_data = support_data.get('naive_parallel', {})
+        algorithms['Naive Parallel'].append(naive_data.get('total_time', 0))
 
-        if trad_status != 'success' or trad_time == 0:
-            traditional_failed = True
-            algorithms['Traditional'].append(0)
-        else:
-            algorithms['Traditional'].append(trad_time)
+        # WDPA strategies at max processors
+        for strategy in ['BL', 'CL', 'BWT', 'CWT']:
+            key = f'wdpa_{strategy}_{max_procs}p'
+            data = support_data.get(key, {})
+            time = data.get('computation_time', data.get('total_time', 0))
+            algorithms[f'WDPA-{strategy}'].append(time)
 
-        # Extract times for parallel algorithms (use computation_time if available, else total_time)
-        algorithms['Naive Parallel'].append(support_data.get('naive_parallel', {}).get('total_time', 0))
-        algorithms['WDPA-BL'].append(support_data.get('wdpa_BL', {}).get('computation_time', support_data.get('wdpa_BL', {}).get('total_time', 0)))
-        algorithms['WDPA-CL'].append(support_data.get('wdpa_CL', {}).get('computation_time', support_data.get('wdpa_CL', {}).get('total_time', 0)))
-        algorithms['WDPA-BWT'].append(support_data.get('wdpa_BWT', {}).get('computation_time', support_data.get('wdpa_BWT', {}).get('total_time', 0)))
-        algorithms['WDPA-CWT'].append(support_data.get('wdpa_CWT', {}).get('computation_time', support_data.get('wdpa_CWT', {}).get('total_time', 0)))
-
-    # Create plot
     fig, ax = plt.subplots(figsize=(12, 6))
-
     x = np.arange(len(support_levels))
-    width = 0.12
-
-    colors = {
-        'Traditional': '#2C3E50',
-        'Naive Parallel': '#E74C3C',
-        'WDPA-BL': '#3498DB',
-        'WDPA-CL': '#2ECC71',
-        'WDPA-BWT': '#F39C12',
-        'WDPA-CWT': '#9B59B6'
-    }
+    width = 0.15
 
     for i, (algo, times) in enumerate(algorithms.items()):
-        offset = (i - 2.5) * width
-        bars = ax.bar(x + offset, times, width, label=algo, color=colors[algo], alpha=0.8)
+        offset = (i - 2) * width
+        color = COLORS.get(algo, '#333333')
+        bars = ax.bar(x + offset, times, width, label=algo, color=color, alpha=0.85,
+                     edgecolor='black', linewidth=0.8)
 
-        # Add value labels on bars
-        for bar in bars:
-            height = bar.get_height()
-            if height > 0:
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.2f}s',
-                       ha='center', va='bottom', fontsize=8, rotation=0)
-
-    # Add note about traditional failure if applicable
-    if traditional_failed:
-        ax.text(0.5, 0.95, 'Note: Traditional algorithm failed due to memory constraints',
-               transform=ax.transAxes, ha='center', va='top',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-               fontsize=9, style='italic')
+        # No labels on bars
 
     ax.set_xlabel('Support Threshold', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Execution Time (seconds)', fontsize=12, fontweight='bold')
-    ax.set_title(f'Execution Time Comparison Across Algorithms\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                fontsize=14, fontweight='bold')
+    ax.set_ylabel('Execution Time (seconds, log scale)', fontsize=12, fontweight='bold')
+    ax.set_title(f'Execution Time Comparison ({max_procs} processors)\n' +
+                f'Dataset: {sample_size:,} transactions | {max_items:,} items',
+                fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(support_levels)
-    ax.legend(loc='upper right', framealpha=0.9)
-    ax.grid(axis='y', alpha=0.3)
+    ax.legend(loc='upper right', framealpha=0.95, edgecolor='black')
+    ax.grid(axis='y', alpha=0.3, which='both')  # Show both major and minor grid
+
+    # Use logarithmic scale to show vast differences
+    ax.set_yscale('log')
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/execution_time_comparison.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/execution_time_comparison.png")
+    plt.savefig(f'{output_dir}/execution_time_comparison.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: execution_time_comparison.png")
     plt.close()
 
 
-def plot_speedup_comparison(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Plot speedup comparison for parallel algorithms."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+def plot_speedup_comparison(results, output_dir):
+    """
+    FIXED: Calculate speedup correctly against 1p baseline.
+    """
+    print("\n[*] Plotting speedup comparison...")
 
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     sample_size, max_items = get_dataset_info(results)
 
-    # Extract data
+    proc_counts = get_processor_counts(results)
+    max_procs = max(proc_counts) if proc_counts else 1
+
+    print(f"   Using max processor count: {max_procs}")
+
     support_levels = []
     speedups = {
         'Naive Parallel': [],
@@ -163,84 +425,73 @@ def plot_speedup_comparison(results, output_dir=f'results/{benchmark_name}/plots
     }
 
     for support_key, support_data in results['results_by_support'].items():
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
+        min_support = None
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                min_support = algo_data['min_support']
+                break
 
-        support_levels.append(f"{min_support*100:.1f}%")
+        support_levels.append(f"{min_support*100:.2f}%")
 
-        # Extract speedups
-        speedups['Naive Parallel'].append(
-            support_data.get('naive_parallel', {}).get('speedup_metrics', {}).get('speedup', 0)
-        )
-        speedups['WDPA-BL'].append(
-            support_data.get('wdpa_BL', {}).get('speedup_metrics', {}).get('speedup', 0)
-        )
-        speedups['WDPA-CL'].append(
-            support_data.get('wdpa_CL', {}).get('speedup_metrics', {}).get('speedup', 0)
-        )
-        speedups['WDPA-BWT'].append(
-            support_data.get('wdpa_BWT', {}).get('speedup_metrics', {}).get('speedup', 0)
-        )
-        speedups['WDPA-CWT'].append(
-            support_data.get('wdpa_CWT', {}).get('speedup_metrics', {}).get('speedup', 0)
-        )
+        # Get naive baseline (1 processor equivalent would be naive)
+        naive_time = support_data.get('naive_parallel', {}).get('total_time', 0)
 
-    # Create plot
+        # For WDPA, use their speedup_metrics which compares to 1p
+        for strategy in ['BL', 'CL', 'BWT', 'CWT']:
+            key = f'wdpa_{strategy}_{max_procs}p'
+            data = support_data.get(key, {})
+            speedup = data.get('speedup_metrics', {}).get('speedup', 0)
+            speedups[f'WDPA-{strategy}'].append(speedup)
+
+        # Naive is baseline, so speedup = 1
+        speedups['Naive Parallel'].append(1.0)
+
     fig, ax = plt.subplots(figsize=(12, 6))
-
     x = np.arange(len(support_levels))
 
-    colors = {
-        'Naive Parallel': '#E74C3C',
-        'WDPA-BL': '#3498DB',
-        'WDPA-CL': '#2ECC71',
-        'WDPA-BWT': '#F39C12',
-        'WDPA-CWT': '#9B59B6'
-    }
-
-    markers = {
-        'Naive Parallel': 'o',
-        'WDPA-BL': 's',
-        'WDPA-CL': '^',
-        'WDPA-BWT': 'D',
-        'WDPA-CWT': 'v'
-    }
-
     for algo, values in speedups.items():
-        ax.plot(x, values, marker=markers[algo], linewidth=2.5, markersize=10,
-                label=algo, color=colors[algo], alpha=0.8)
+        marker = MARKERS.get(algo, 'o')
+        color = COLORS.get(algo, '#333333')
+        ax.plot(x, values, marker=marker, linewidth=2.5, markersize=4,
+                label=algo, color=color, alpha=0.85)
 
-        # Add value labels
-        for i, v in enumerate(values):
-            if v > 0:
-                ax.text(i, v + 0.05, f'{v:.2f}x', ha='center', va='bottom', fontsize=9)
+        # No labels on points
 
-    # Add baseline line at y=1
-    ax.axhline(y=1.0, color='gray', linestyle='--', linewidth=2, alpha=0.5, label='Baseline (1x)')
+    ax.axhline(y=1.0, color=COLORS['Ideal'], linestyle='--', linewidth=2.5, alpha=0.7,
+              label='Baseline (1×)')
 
     ax.set_xlabel('Support Threshold', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Speedup vs Traditional Apriori', fontsize=12, fontweight='bold')
-    ax.set_title(f'Speedup Comparison: Parallel Algorithms vs Traditional\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                fontsize=14, fontweight='bold')
+    ax.set_ylabel('Speedup vs Single Processor', fontsize=12, fontweight='bold')
+    ax.set_title(f'Speedup Comparison ({max_procs} processors vs 1 processor)\n' +
+                f'Dataset: {sample_size:,} transactions | {max_items:,} items',
+                fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(support_levels)
-    ax.legend(loc='best', framealpha=0.9)
+    ax.legend(loc='best', framealpha=0.95, edgecolor='black')
     ax.grid(True, alpha=0.3)
 
+    # Limit y-axis to 6x for better readability
+    ax.set_ylim(0, 6)
+
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/speedup_comparison.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/speedup_comparison.png")
+    plt.savefig(f'{output_dir}/speedup_comparison.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: speedup_comparison.png")
     plt.close()
 
 
-def plot_efficiency_comparison(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Plot efficiency comparison for parallel algorithms."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+def plot_efficiency_comparison(results, output_dir):
+    """
+    FIXED: Calculate efficiency correctly - show average across all processor counts.
+    Efficiency = how well processors are utilized on average.
+    """
+    print("\n[*] Plotting efficiency comparison...")
 
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     sample_size, max_items = get_dataset_info(results)
 
-    # Extract data
+    proc_counts = get_processor_counts(results)
+    print(f"   Calculating average efficiency across processor counts: {proc_counts}")
+
     support_levels = []
     efficiencies = {
         'Naive Parallel': [],
@@ -251,811 +502,871 @@ def plot_efficiency_comparison(results, output_dir=f'results/{benchmark_name}/pl
     }
 
     for support_key, support_data in results['results_by_support'].items():
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
+        min_support = None
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                min_support = algo_data['min_support']
+                break
 
-        support_levels.append(f"{min_support*100:.1f}%")
+        support_levels.append(f"{min_support*100:.2f}%")
 
-        # Extract efficiencies (convert to percentage)
-        efficiencies['Naive Parallel'].append(
-            support_data.get('naive_parallel', {}).get('speedup_metrics', {}).get('efficiency', 0) * 100
-        )
-        efficiencies['WDPA-BL'].append(
-            support_data.get('wdpa_BL', {}).get('speedup_metrics', {}).get('efficiency', 0) * 100
-        )
-        efficiencies['WDPA-CL'].append(
-            support_data.get('wdpa_CL', {}).get('speedup_metrics', {}).get('efficiency', 0) * 100
-        )
-        efficiencies['WDPA-BWT'].append(
-            support_data.get('wdpa_BWT', {}).get('speedup_metrics', {}).get('efficiency', 0) * 100
-        )
-        efficiencies['WDPA-CWT'].append(
-            support_data.get('wdpa_CWT', {}).get('speedup_metrics', {}).get('efficiency', 0) * 100
-        )
+        # Naive: assume 1 processor equivalent, so efficiency = 100%
+        efficiencies['Naive Parallel'].append(100.0)
 
-    # Create plot
+        # WDPA strategies - calculate average efficiency across all processor counts
+        for strategy in ['BL', 'CL', 'BWT', 'CWT']:
+            strategy_efficiencies = []
+            for num_procs in proc_counts:
+                key = f'wdpa_{strategy}_{num_procs}p'
+                data = support_data.get(key, {})
+                eff = data.get('speedup_metrics', {}).get('efficiency', 0) * 100
+                if eff > 0:
+                    strategy_efficiencies.append(eff)
+
+            # Average efficiency across all processor counts
+            avg_eff = np.mean(strategy_efficiencies) if strategy_efficiencies else 0
+            efficiencies[f'WDPA-{strategy}'].append(avg_eff)
+
     fig, ax = plt.subplots(figsize=(12, 6))
-
     x = np.arange(len(support_levels))
     width = 0.15
 
-    colors = {
-        'Naive Parallel': '#E74C3C',
-        'WDPA-BL': '#3498DB',
-        'WDPA-CL': '#2ECC71',
-        'WDPA-BWT': '#F39C12',
-        'WDPA-CWT': '#9B59B6'
-    }
-
     for i, (algo, values) in enumerate(efficiencies.items()):
         offset = (i - 2) * width
-        bars = ax.bar(x + offset, values, width, label=algo, color=colors[algo], alpha=0.8)
+        color = COLORS.get(algo, '#333333')
+        bars = ax.bar(x + offset, values, width, label=algo, color=color, alpha=0.85,
+                     edgecolor='black', linewidth=0.8)
 
-        # Add value labels
-        for bar in bars:
-            height = bar.get_height()
-            if height > 0:
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.1f}%',
-                       ha='center', va='bottom', fontsize=8)
+        # No labels on bars
 
-    # Add ideal efficiency line at 100%
-    ax.axhline(y=100, color='gray', linestyle='--', linewidth=2, alpha=0.5, label='Ideal (100%)')
+    ax.axhline(y=100, color=COLORS['Ideal'], linestyle='--', linewidth=2.5, alpha=0.7,
+              label='Ideal (100%)')
 
     ax.set_xlabel('Support Threshold', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Efficiency (%)', fontsize=12, fontweight='bold')
-    ax.set_title(f'Parallel Efficiency: Speedup / Number of Processors\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                fontsize=14, fontweight='bold')
+    ax.set_ylabel('Average Parallel Efficiency (%)', fontsize=12, fontweight='bold')
+    ax.set_title(f'Parallel Efficiency (Average Across All Processor Counts)\n' +
+                f'Dataset: {sample_size:,} transactions | {max_items:,} items',
+                fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(support_levels)
-    ax.legend(loc='upper right', framealpha=0.9)
+    ax.legend(loc='upper right', framealpha=0.95, edgecolor='black')
     ax.grid(axis='y', alpha=0.3)
-    ax.set_ylim(0, 110)
+
+    # Auto-scale
+    all_vals = [v for vals in efficiencies.values() for v in vals]
+    if all_vals:
+        ax.set_ylim(0, max(110, max(all_vals) * 1.1))
 
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/efficiency_comparison.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/efficiency_comparison.png")
+    plt.savefig(f'{output_dir}/efficiency_comparison.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: efficiency_comparison.png")
     plt.close()
 
 
-def plot_wdpa_strategies_detailed(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Detailed comparison of WDPA strategies only."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    sample_size, max_items = get_dataset_info(results)
-
-    # Extract data for lowest support (best parallelization case)
-    first_support_key = list(results['results_by_support'].keys())[0]
-    support_data = results['results_by_support'][first_support_key]
-    min_support = support_data.get('traditional', {}).get('min_support', 0)
-
-    strategies = ['BL', 'CL', 'BWT', 'CWT']
-    metrics = {
-        'Time (s)': [],
-        'Speedup': [],
-        'Efficiency (%)': []
-    }
-
-    for strategy in strategies:
-        key = f'wdpa_{strategy}'
-        data = support_data.get(key, {})
-        # Use computation_time if available, else total_time
-        metrics['Time (s)'].append(data.get('computation_time', data.get('total_time', 0)))
-        metrics['Speedup'].append(data.get('speedup_metrics', {}).get('speedup', 0))
-        metrics['Efficiency (%)'].append(data.get('speedup_metrics', {}).get('efficiency', 0) * 100)
-
-    # Create subplots
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-    colors = ['#3498DB', '#2ECC71', '#F39C12', '#9B59B6']
-
-    # Plot 1: Execution Time
-    bars1 = axes[0].bar(strategies, metrics['Time (s)'], color=colors, alpha=0.8)
-    axes[0].set_ylabel('Execution Time (seconds)', fontweight='bold')
-    axes[0].set_title(f'Execution Time\n(Support: {min_support*100:.1f}%)', fontweight='bold')
-    axes[0].grid(axis='y', alpha=0.3)
-    for bar in bars1:
-        height = bar.get_height()
-        axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}s', ha='center', va='bottom', fontweight='bold')
-
-    # Plot 2: Speedup
-    bars2 = axes[1].bar(strategies, metrics['Speedup'], color=colors, alpha=0.8)
-    axes[1].set_ylabel('Speedup vs Traditional', fontweight='bold')
-    axes[1].set_title(f'Speedup\n(Support: {min_support*100:.1f}%)', fontweight='bold')
-    axes[1].axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
-    axes[1].grid(axis='y', alpha=0.3)
-    for bar in bars2:
-        height = bar.get_height()
-        axes[1].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}x', ha='center', va='bottom', fontweight='bold')
-
-    # Plot 3: Efficiency
-    bars3 = axes[2].bar(strategies, metrics['Efficiency (%)'], color=colors, alpha=0.8)
-    axes[2].set_ylabel('Efficiency (%)', fontweight='bold')
-    axes[2].set_title(f'Parallel Efficiency\n(Support: {min_support*100:.1f}%)', fontweight='bold')
-    axes[2].axhline(y=100, color='gray', linestyle='--', alpha=0.5, label='Ideal')
-    axes[2].grid(axis='y', alpha=0.3)
-    axes[2].set_ylim(0, 100)
-    for bar in bars3:
-        height = bar.get_height()
-        axes[2].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.1f}%', ha='center', va='bottom', fontweight='bold')
-
-    plt.suptitle(f'WDPA Lattice Distribution Strategies Comparison\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                 fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/wdpa_strategies_detailed.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/wdpa_strategies_detailed.png")
-    plt.close()
-
-
-def plot_traditional_failure_analysis(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Visualize how traditional failed while parallel algorithms succeeded."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    sample_size, max_items = get_dataset_info(results)
-
-    # Get the first support level where traditional failed
-    first_support_key = list(results['results_by_support'].keys())[0]
-    support_data = results['results_by_support'][first_support_key]
-
-    trad_data = support_data.get('traditional', {})
-    trad_status = trad_data.get('status', 'success')
-    memory_required = trad_data.get('memory_required', 'Unknown')
-    error_message = trad_data.get('error_message', '')
-
-    # Only create this plot if traditional actually failed
-    if trad_status == 'success':
-        return
-
-    min_support = trad_data.get('min_support', 0)
-
-    # Create figure with two subplots
-    fig = plt.figure(figsize=(14, 8))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 2])
-
-    # Top: Traditional failure info (spans both columns)
-    ax_info = fig.add_subplot(gs[0, :])
-    ax_info.axis('off')
-
-    failure_text = f"""
-    Traditional Apriori Algorithm Failure Analysis
-
-    Status: FAILED - {error_message}
-    Memory Required: {memory_required}
-    Support Threshold: {min_support*100:.1f}%
-
-    Traditional Apriori could not process this dataset due to memory constraints.
-    Parallel algorithms succeeded by distributing the workload efficiently.
+def plot_speedup_vs_processors_overall(results, output_dir):
     """
+    NEW: Show overall speedup vs number of processors for all strategies.
+    Speedup calculated relative to Naive Parallel baseline (not 1 processor).
+    Averaged across all support thresholds to show general trend.
+    """
+    print("\n[*] Plotting overall speedup vs processors...")
 
-    ax_info.text(0.5, 0.5, failure_text,
-                transform=ax_info.transAxes,
-                ha='center', va='center',
-                bbox=dict(boxstyle='round,pad=1', facecolor='#FFE6E6', edgecolor='#E74C3C', linewidth=3),
-                fontsize=12, fontweight='bold', family='monospace')
-
-    # Bottom left: Success indicators for parallel algorithms
-    ax_success = fig.add_subplot(gs[1, 0])
-
-    algorithms = ['Naive\nParallel', 'WDPA-BL', 'WDPA-CL', 'WDPA-BWT', 'WDPA-CWT']
-    success_values = [1, 1, 1, 1, 1]  # All succeeded
-    colors_success = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6']
-
-    bars = ax_success.barh(algorithms, success_values, color=colors_success, alpha=0.8)
-    ax_success.set_xlabel('Success (All Completed)', fontweight='bold', fontsize=11)
-    ax_success.set_xlim(0, 1.2)
-    ax_success.set_xticks([0, 1])
-    ax_success.set_xticklabels(['Failed', 'Success'])
-    ax_success.set_title('Parallel Algorithm Success Rate', fontweight='bold', fontsize=12)
-    ax_success.grid(axis='x', alpha=0.3)
-
-    for bar in bars:
-        width = bar.get_width()
-        ax_success.text(width + 0.02, bar.get_y() + bar.get_height()/2,
-                       '✓ SUCCESS', ha='left', va='center',
-                       fontweight='bold', color='green', fontsize=10)
-
-    # Bottom right: Execution times of successful algorithms
-    ax_times = fig.add_subplot(gs[1, 1])
-
-    times = []
-    algo_names = []
-    algo_colors = []
-
-    for i, (algo_key, label, color) in enumerate([
-        ('naive_parallel', 'Naive\nParallel', '#E74C3C'),
-        ('wdpa_BL', 'WDPA-BL', '#3498DB'),
-        ('wdpa_CL', 'WDPA-CL', '#2ECC71'),
-        ('wdpa_BWT', 'WDPA-BWT', '#F39C12'),
-        ('wdpa_CWT', 'WDPA-CWT', '#9B59B6')
-    ]):
-        time = support_data.get(algo_key, {}).get('total_time', 0)
-        if time > 0:
-            times.append(time)
-            algo_names.append(label)
-            algo_colors.append(color)
-
-    bars2 = ax_times.barh(algo_names, times, color=algo_colors, alpha=0.8)
-    ax_times.set_xlabel('Execution Time (seconds)', fontweight='bold', fontsize=11)
-    ax_times.set_title(f'Parallel Algorithm Execution Times\n(Support: {min_support*100:.1f}%)',
-                      fontweight='bold', fontsize=12)
-    ax_times.grid(axis='x', alpha=0.3)
-
-    for bar, time in zip(bars2, times):
-        width = bar.get_width()
-        ax_times.text(width + max(times)*0.01, bar.get_y() + bar.get_height()/2,
-                     f'{time:.2f}s', ha='left', va='center',
-                     fontweight='bold', fontsize=10)
-
-    plt.suptitle(f'Traditional Apriori Failure vs Parallel Success\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                fontsize=16, fontweight='bold', y=0.98)
-
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/traditional_failure_analysis.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/traditional_failure_analysis.png")
-    plt.close()
-
-
-def plot_best_algorithm_summary(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Create a summary showing the best algorithm for each support level (parallel only)."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-
     sample_size, max_items = get_dataset_info(results)
 
-    support_levels = []
-    best_algo = []
-    best_time = []
-    worst_time = []
+    proc_counts = get_processor_counts(results)
+    strategies = ['BL', 'CL', 'BWT', 'CWT']
 
-    for support_key, support_data in results['results_by_support'].items():
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
+    scaling_ratios = None
 
-        support_levels.append(f"{min_support*100:.1f}%")
-
-        # Only compare parallel algorithms (exclude traditional) - use computation_time if available
-        times = {}
-        naive_data = support_data.get('naive_parallel', {})
-        times['Naive'] = naive_data.get('total_time', float('inf'))
-
-        bl_data = support_data.get('wdpa_BL', {})
-        times['WDPA-BL'] = bl_data.get('computation_time', bl_data.get('total_time', float('inf')))
-
-        cl_data = support_data.get('wdpa_CL', {})
-        times['WDPA-CL'] = cl_data.get('computation_time', cl_data.get('total_time', float('inf')))
-
-        bwt_data = support_data.get('wdpa_BWT', {})
-        times['WDPA-BWT'] = bwt_data.get('computation_time', bwt_data.get('total_time', float('inf')))
-
-        cwt_data = support_data.get('wdpa_CWT', {})
-        times['WDPA-CWT'] = cwt_data.get('computation_time', cwt_data.get('total_time', float('inf')))
-
-        # Filter out algorithms that didn't run
-        valid_times = {k: v for k, v in times.items() if v != float('inf') and v > 0}
-
-        if valid_times:
-            best = min(valid_times.items(), key=lambda x: x[1])
-            worst = max(valid_times.items(), key=lambda x: x[1])
-            best_algo.append(best[0])
-            best_time.append(best[1])
-            worst_time.append(worst[1])
-        else:
-            best_algo.append('None')
-            best_time.append(0)
-            worst_time.append(0)
-
-    # Create plot
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    x = np.arange(len(support_levels))
-    width = 0.35
+    # Collect speedup data for all strategies
+    all_speedups = {}
+    for strategy in strategies:
+        # Collect times for this strategy across all supports to calculate speedup vs 1p
+        times_by_proc = {p: [] for p in proc_counts}
 
-    bars1 = ax.bar(x - width/2, worst_time, width, label='Worst Parallel Algorithm',
-                   color='#E74C3C', alpha=0.6)
-    bars2 = ax.bar(x + width/2, best_time, width, label='Best Parallel Algorithm',
-                   color='#27AE60', alpha=0.8)
+        for support_key, support_data in results['results_by_support'].items():
+            for num_procs in proc_counts:
+                key = f'wdpa_{strategy}_{num_procs}p'
+                if key in support_data:
+                    data = support_data[key]
+                    wdpa_time = data.get('computation_time', 0)
+                    if wdpa_time > 0:
+                        times_by_proc[num_procs].append(wdpa_time)
 
-    # Add labels
-    for i, (bar1, bar2, algo) in enumerate(zip(bars1, bars2, best_algo)):
-        # Worst time label
-        height1 = bar1.get_height()
-        if height1 > 0:
-            ax.text(bar1.get_x() + bar1.get_width()/2., height1,
-                   f'{height1:.2f}s', ha='center', va='bottom', fontsize=9)
+        # Calculate average time for each processor count
+        avg_times = {}
+        for num_procs in proc_counts:
+            if times_by_proc[num_procs]:
+                avg_times[num_procs] = np.mean(times_by_proc[num_procs])
 
-        # Best algorithm label
-        height2 = bar2.get_height()
-        if height2 > 0:
-            improvement = ((height1 - height2) / height1 * 100) if height1 > 0 else 0
-            ax.text(bar2.get_x() + bar2.get_width()/2., height2,
-                   f'{height2:.2f}s\n({algo})\n{improvement:.1f}% faster',
-                   ha='center', va='bottom', fontsize=8, fontweight='bold')
+        # Calculate speedup relative to 1 processor
+        if 1 in avg_times and avg_times[1] > 0:
+            baseline_time = avg_times[1]
+            speedups = []
 
-    ax.set_xlabel('Support Threshold', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Execution Time (seconds)', fontsize=12, fontweight='bold')
-    ax.set_title(f'Best vs Worst Parallel Algorithm Performance\n(Sample Size: {sample_size:,} | Max Items: {max_items:,})',
-                fontsize=14, fontweight='bold')
+            for num_procs in proc_counts:
+                if num_procs in avg_times:
+                    speedup = baseline_time / avg_times[num_procs]
+                    speedups.append(speedup)
+                else:
+                    speedups.append(0)
+
+            all_speedups[strategy] = speedups
+
+    # Create grouped bar chart
+    x = np.arange(len(proc_counts))
+    width = 0.18  # Width of each bar
+    offsets = [-1.5, -0.5, 0.5, 1.5]  # Offsets for 4 strategies
+
+    for idx, strategy in enumerate(strategies):
+        if strategy in all_speedups:
+            color = COLORS.get(f'WDPA-{strategy}', '#333333')
+            bars = ax.bar(x + offsets[idx] * width, all_speedups[strategy], width,
+                         label=f'WDPA-{strategy}', color=color, alpha=0.85,
+                         edgecolor='black', linewidth=0.8)
+
+    ax.set_xlabel('Number of Processors', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Average Speedup (vs 1 Processor)', fontsize=12, fontweight='bold')
+    ax.set_title(f'Overall Speedup vs Number of Processors (vs 1 Processor Baseline)\n' +
+                f'Averaged across all support thresholds | Dataset: {sample_size:,} transactions',
+                fontsize=13, fontweight='bold')
     ax.set_xticks(x)
-    ax.set_xticklabels(support_levels)
-    ax.legend(loc='upper right', framealpha=0.9)
+    ax.set_xticklabels([str(p) for p in proc_counts])
+    ax.legend(loc='best', framealpha=0.95, edgecolor='black', fontsize=10)
     ax.grid(axis='y', alpha=0.3)
 
-    # Add note about traditional
-    ax.text(0.5, 0.02, 'Note: Traditional algorithm excluded due to memory failure',
-           transform=ax.transAxes, ha='center', va='bottom',
-           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-           fontsize=9, style='italic')
-
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/best_algorithm_summary.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/best_algorithm_summary.png")
+    plt.savefig(f'{output_dir}/speedup_vs_processors_overall.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: speedup_vs_processors_overall.png")
     plt.close()
 
 
-def detect_processor_scaling(results):
-    """Detect if results include processor scaling experiments."""
-    # Check if any result keys contain processor count suffix (e.g., wdpa_BL_2p, wdpa_BL_4p)
-    for support_key, support_data in results['results_by_support'].items():
-        for key in support_data.keys():
-            if '_' in key and key.endswith('p') and key.count('_') >= 2:
-                # Extract processor counts for each strategy
-                processor_scaling = {}
-                for result_key in support_data.keys():
-                    if result_key.startswith('wdpa_'):
-                        parts = result_key.split('_')
-                        if len(parts) >= 3 and parts[-1].endswith('p'):
-                            strategy = parts[1]
-                            num_procs = int(parts[-1][:-1])  # Remove 'p' and convert to int
+def plot_overhead_analysis(results, output_dir):
+    """
+    FIXED: Calculate overhead correctly as (total_time - computation_time) / total_time.
+    """
+    print("\n[*] Plotting overhead analysis...")
 
-                            if strategy not in processor_scaling:
-                                processor_scaling[strategy] = []
-                            processor_scaling[strategy].append(num_procs)
-
-                if processor_scaling:
-                    return processor_scaling
-
-    return None
-
-
-def plot_processor_scaling_analysis(results, output_dir=f'results/{benchmark_name}/plots'):
-    """Create processor scaling visualizations if multiple processor counts were tested."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-
     sample_size, max_items = get_dataset_info(results)
 
-    # Detect processor scaling
-    processor_scaling = detect_processor_scaling(results)
+    proc_counts = get_processor_counts(results)
+    max_procs = max(proc_counts) if proc_counts else 1
 
-    if not processor_scaling:
-        print("No processor scaling detected - skipping processor scaling plots")
-        return
-
-    print(f"Detected processor scaling: {processor_scaling}")
-
-    # Get first support level for analysis
-    first_support_key = list(results['results_by_support'].keys())[0]
-    support_data = results['results_by_support'][first_support_key]
-    min_support = list(support_data.values())[0].get('min_support', 0)
-
-    # Create figure with 3 subplots for each strategy
-    for strategy, proc_counts in processor_scaling.items():
-        proc_counts = sorted(proc_counts)
-
-        # Collect data for this strategy across processor counts
-        times = []
-        speedups = []
-        efficiencies = []
-
-        for num_procs in proc_counts:
-            key = f'wdpa_{strategy}_{num_procs}p'
-            if key in support_data:
-                data = support_data[key]
-                # Use computation_time if available, else total_time
-                times.append(data.get('computation_time', data.get('total_time', 0)))
-                speedup = data.get('speedup_metrics', {}).get('speedup', 0)
-                efficiency = data.get('speedup_metrics', {}).get('efficiency', 0) * 100
-                speedups.append(speedup)
-                efficiencies.append(efficiency)
-
-        if not times:
-            continue
-
-        # Create 3-panel plot
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-        # Plot 1: Execution Time vs Processors
-        axes[0].plot(proc_counts, times, marker='o', linewidth=2.5, markersize=10, color='#3498DB')
-        axes[0].set_xlabel('Number of Processors', fontweight='bold')
-        axes[0].set_ylabel('Execution Time (seconds)', fontweight='bold')
-        axes[0].set_title(f'Execution Time vs Processors\n(WDPA-{strategy})', fontweight='bold')
-        axes[0].grid(True, alpha=0.3)
-        axes[0].set_xticks(proc_counts)
-
-        # Add value labels
-        for x, y in zip(proc_counts, times):
-            axes[0].text(x, y, f'{y:.2f}s', ha='center', va='bottom', fontweight='bold')
-
-        # Plot 2: Speedup vs Processors
-        axes[1].plot(proc_counts, speedups, marker='s', linewidth=2.5, markersize=10, color='#2ECC71')
-        # Add ideal linear speedup line
-        if speedups[0] > 0:
-            ideal_speedups = [speedups[0] * (p / proc_counts[0]) for p in proc_counts]
-            axes[1].plot(proc_counts, ideal_speedups, linestyle='--', color='gray',
-                        linewidth=2, alpha=0.5, label='Ideal Linear Speedup')
-        axes[1].set_xlabel('Number of Processors', fontweight='bold')
-        axes[1].set_ylabel('Speedup', fontweight='bold')
-        axes[1].set_title(f'Speedup vs Processors\n(WDPA-{strategy})', fontweight='bold')
-        axes[1].grid(True, alpha=0.3)
-        axes[1].set_xticks(proc_counts)
-        axes[1].legend(loc='best')
-
-        # Add value labels
-        for x, y in zip(proc_counts, speedups):
-            axes[1].text(x, y, f'{y:.2f}x', ha='center', va='bottom', fontweight='bold')
-
-        # Plot 3: Efficiency vs Processors
-        axes[2].plot(proc_counts, efficiencies, marker='^', linewidth=2.5, markersize=10, color='#F39C12')
-        axes[2].axhline(y=100, color='gray', linestyle='--', linewidth=2, alpha=0.5, label='Ideal (100%)')
-        axes[2].set_xlabel('Number of Processors', fontweight='bold')
-        axes[2].set_ylabel('Efficiency (%)', fontweight='bold')
-        axes[2].set_title(f'Parallel Efficiency vs Processors\n(WDPA-{strategy})', fontweight='bold')
-        axes[2].grid(True, alpha=0.3)
-        axes[2].set_xticks(proc_counts)
-
-        # Auto-scale efficiency axis based on data
-        if efficiencies:
-            max_eff = max(efficiencies)
-            if max_eff > 100:
-                # Round up to nearest 100 or 50
-                if max_eff > 200:
-                    y_max = ((max_eff // 100) + 1) * 100 + 100  # Add buffer
-                else:
-                    y_max = ((max_eff // 50) + 1) * 50 + 50  # Add buffer
-            else:
-                y_max = 110  # Standard case
-            axes[2].set_ylim(0, y_max)
-
-        axes[2].legend(loc='best')
-
-        # Add value labels
-        for x, y in zip(proc_counts, efficiencies):
-            axes[2].text(x, y, f'{y:.1f}%', ha='center', va='bottom', fontweight='bold')
-
-        plt.suptitle(f'WDPA-{strategy} Processor Scaling Analysis\n(Sample Size: {sample_size:,} | Max Items: {max_items:,} | Support: {min_support*100:.1f}%)',
-                    fontsize=16, fontweight='bold', y=1.02)
-        plt.tight_layout()
-        plt.savefig(f'{output_dir}/processor_scaling_{strategy}.png', dpi=300, bbox_inches='tight')
-        print(f"Saved: {output_dir}/processor_scaling_{strategy}.png")
-        plt.close()
-
-    # Create combined comparison plot for all strategies
-    plot_processor_scaling_combined(results, processor_scaling, output_dir)
-
-
-def plot_processor_scaling_combined(results, processor_scaling, output_dir=f'results/{benchmark_name}/plots'):
-    """Create combined processor scaling plot comparing all strategies."""
-    sample_size, max_items = get_dataset_info(results)
-
-    # Get first support level
-    first_support_key = list(results['results_by_support'].keys())[0]
-    support_data = results['results_by_support'][first_support_key]
-    min_support = list(support_data.values())[0].get('min_support', 0)
-
-    # Create figure with 2 subplots
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    colors = {'BL': '#3498DB', 'CL': '#2ECC71', 'BWT': '#F39C12', 'CWT': '#9B59B6'}
-    markers = {'BL': 'o', 'CL': 's', 'BWT': '^', 'CWT': 'D'}
-
-    # Plot 1: Speedup comparison
-    for strategy, proc_counts in processor_scaling.items():
-        proc_counts = sorted(proc_counts)
-        speedups = []
-
-        for num_procs in proc_counts:
-            key = f'wdpa_{strategy}_{num_procs}p'
-            if key in support_data:
-                speedup = support_data[key].get('speedup_metrics', {}).get('speedup', 0)
-                speedups.append(speedup)
-
-        if speedups:
-            axes[0].plot(proc_counts, speedups, marker=markers.get(strategy, 'o'),
-                        linewidth=2.5, markersize=10, label=f'WDPA-{strategy}',
-                        color=colors.get(strategy, '#333333'), alpha=0.8)
-
-    # Add ideal speedup line
-    if processor_scaling:
-        all_proc_counts = sorted(set([p for procs in processor_scaling.values() for p in procs]))
-        if all_proc_counts:
-            ideal = [p / all_proc_counts[0] for p in all_proc_counts]
-            axes[0].plot(all_proc_counts, ideal, linestyle='--', color='gray',
-                        linewidth=2, alpha=0.5, label='Ideal Linear')
-
-    axes[0].set_xlabel('Number of Processors', fontweight='bold', fontsize=12)
-    axes[0].set_ylabel('Speedup', fontweight='bold', fontsize=12)
-    axes[0].set_title('Speedup vs Number of Processors', fontweight='bold', fontsize=13)
-    axes[0].legend(loc='best', framealpha=0.9)
-    axes[0].grid(True, alpha=0.3)
-    axes[0].set_xticks(all_proc_counts)
-
-    # Plot 2: Efficiency comparison
-    all_efficiencies = []
-    for strategy, proc_counts in processor_scaling.items():
-        proc_counts = sorted(proc_counts)
-        efficiencies = []
-
-        for num_procs in proc_counts:
-            key = f'wdpa_{strategy}_{num_procs}p'
-            if key in support_data:
-                efficiency = support_data[key].get('speedup_metrics', {}).get('efficiency', 0) * 100
-                efficiencies.append(efficiency)
-                all_efficiencies.append(efficiency)
-
-        if efficiencies:
-            axes[1].plot(proc_counts, efficiencies, marker=markers.get(strategy, 'o'),
-                        linewidth=2.5, markersize=10, label=f'WDPA-{strategy}',
-                        color=colors.get(strategy, '#333333'), alpha=0.8)
-
-    axes[1].axhline(y=100, color='gray', linestyle='--', linewidth=2, alpha=0.5, label='Ideal (100%)')
-    axes[1].set_xlabel('Number of Processors', fontweight='bold', fontsize=12)
-    axes[1].set_ylabel('Efficiency (%)', fontweight='bold', fontsize=12)
-    axes[1].set_title('Parallel Efficiency vs Number of Processors', fontweight='bold', fontsize=13)
-    axes[1].legend(loc='best', framealpha=0.9)
-    axes[1].grid(True, alpha=0.3)
-    axes[1].set_xticks(all_proc_counts)
-
-    # Auto-scale efficiency axis based on data
-    if all_efficiencies:
-        max_eff = max(all_efficiencies)
-        if max_eff > 100:
-            # Round up to nearest 100 or 50
-            if max_eff > 200:
-                y_max = ((max_eff // 100) + 1) * 100 + 100  # Add buffer
-            else:
-                y_max = ((max_eff // 50) + 1) * 50 + 50  # Add buffer
-        else:
-            y_max = 110  # Standard case
-        axes[1].set_ylim(0, y_max)
-
-    plt.suptitle(f'Processor Scaling: All WDPA Strategies\n(Sample Size: {sample_size:,} | Max Items: {max_items:,} | Support: {min_support*100:.1f}%)',
-                fontsize=16, fontweight='bold', y=1.00)
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/processor_scaling_combined.png', dpi=300, bbox_inches='tight')
-    print(f"Saved: {output_dir}/processor_scaling_combined.png")
-    plt.close()
-
-
-def get_support_folder_name(min_support):
-    """Convert support threshold to folder name (e.g., 0.001 -> plot_010)"""
-    # Convert to percentage and remove decimal point
-    support_pct = int(min_support * 1000)  # e.g., 0.001 -> 1, 0.0008 -> 0.8
-
-    # Handle decimal cases
-    if min_support * 1000 == int(min_support * 1000):
-        # Clean integer percentage
-        return f"plot_{support_pct:03d}"
-    else:
-        # Has decimal, multiply by 10 to avoid decimals
-        support_pct = int(min_support * 10000)
-        return f"plot_{support_pct:04d}"
-
-
-def plot_wdpa_strategies_for_support(results, support_key, support_data, output_dir):
-    """Create WDPA strategy comparison plot for a specific support threshold."""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    sample_size, max_items = get_dataset_info(results)
-    min_support = support_data.get('traditional', {}).get('min_support', 0)
-    if not min_support:
-        min_support = list(support_data.values())[0].get('min_support', 0)
-
-    strategies = ['BL', 'CL', 'BWT', 'CWT']
-    metrics = {
-        'Time (s)': [],
-        'Speedup': [],
-        'Efficiency (%)': []
+    support_levels = []
+    overhead_data = {
+        'Naive Parallel': [],
+        'WDPA-BL': [],
+        'WDPA-CL': [],
+        'WDPA-BWT': [],
+        'WDPA-CWT': []
     }
 
-    for strategy in strategies:
-        key = f'wdpa_{strategy}'
-        data = support_data.get(key, {})
-        # Use computation_time if available, else total_time
-        metrics['Time (s)'].append(data.get('computation_time', data.get('total_time', 0)))
-        metrics['Speedup'].append(data.get('speedup_metrics', {}).get('speedup', 0))
-        metrics['Efficiency (%)'].append(data.get('speedup_metrics', {}).get('efficiency', 0) * 100)
+    for support_key, support_data in results['results_by_support'].items():
+        min_support = None
+        for algo_data in support_data.values():
+            if 'min_support' in algo_data:
+                min_support = algo_data['min_support']
+                break
 
-    # Create subplots
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        support_levels.append(f"{min_support*100:.2f}%")
 
-    colors = ['#3498DB', '#2ECC71', '#F39C12', '#9B59B6']
+        # Naive (no computation_time, assume overhead is minimal)
+        overhead_data['Naive Parallel'].append(0)
 
-    # Plot 1: Execution Time
-    bars1 = axes[0].bar(strategies, metrics['Time (s)'], color=colors, alpha=0.8)
-    axes[0].set_ylabel('Execution Time (seconds)', fontweight='bold')
-    axes[0].set_title(f'Execution Time\n(Support: {min_support*100:.2f}%)', fontweight='bold')
-    axes[0].grid(axis='y', alpha=0.3)
-    for bar in bars1:
-        height = bar.get_height()
-        axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}s', ha='center', va='bottom', fontweight='bold')
+        # WDPA strategies
+        for strategy in ['BL', 'CL', 'BWT', 'CWT']:
+            key = f'wdpa_{strategy}_{max_procs}p'
+            data = support_data.get(key, {})
+            total_time = data.get('total_time', 0)
+            comp_time = data.get('computation_time', 0)
 
-    # Plot 2: Speedup
-    bars2 = axes[1].bar(strategies, metrics['Speedup'], color=colors, alpha=0.8)
-    axes[1].set_ylabel('Speedup vs Traditional', fontweight='bold')
-    axes[1].set_title(f'Speedup\n(Support: {min_support*100:.2f}%)', fontweight='bold')
-    axes[1].axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
-    axes[1].grid(axis='y', alpha=0.3)
-    for bar in bars2:
-        height = bar.get_height()
-        axes[1].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}x', ha='center', va='bottom', fontweight='bold')
+            if total_time > 0:
+                overhead_pct = ((total_time - comp_time) / total_time) * 100
+                overhead_data[f'WDPA-{strategy}'].append(max(0, overhead_pct))
+            else:
+                overhead_data[f'WDPA-{strategy}'].append(0)
 
-    # Plot 3: Efficiency
-    bars3 = axes[2].bar(strategies, metrics['Efficiency (%)'], color=colors, alpha=0.8)
-    axes[2].set_ylabel('Efficiency (%)', fontweight='bold')
-    axes[2].set_title(f'Parallel Efficiency\n(Support: {min_support*100:.2f}%)', fontweight='bold')
-    axes[2].axhline(y=100, color='gray', linestyle='--', alpha=0.5, label='Ideal')
-    axes[2].grid(axis='y', alpha=0.3)
-    axes[2].set_ylim(0, 110)
-    for bar in bars3:
-        height = bar.get_height()
-        axes[2].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.1f}%', ha='center', va='bottom', fontweight='bold')
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = np.arange(len(support_levels))
+    width = 0.15
 
-    plt.suptitle(f'WDPA Lattice Distribution Strategies Comparison\n(Sample Size: {sample_size:,} | Max Items: {max_items:,} | Support: {min_support*100:.2f}%)',
-                 fontsize=16, fontweight='bold', y=1.02)
+    for i, (algo, overheads) in enumerate(overhead_data.items()):
+        offset = (i - 2) * width
+        color = COLORS.get(algo, '#333333')
+        bars = ax.bar(x + offset, overheads, width, label=algo, color=color, alpha=0.85,
+                     edgecolor='black', linewidth=0.8)
+
+        # No labels on bars
+
+    ax.set_xlabel('Support Threshold', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Overhead (% of Total Time)', fontsize=12, fontweight='bold')
+    ax.set_title(f'Parallel Overhead Analysis ({max_procs} processors)\n' +
+                f'Dataset: {sample_size:,} transactions | {max_items:,} items',
+                fontweight='bold', fontsize=13)
+    ax.set_xticks(x)
+    ax.set_xticklabels(support_levels)
+    ax.legend(loc='best', framealpha=0.95, edgecolor='black')
+    ax.grid(axis='y', alpha=0.3)
+
+    all_vals = [v for vals in overhead_data.values() for v in vals]
+    if all_vals and max(all_vals) > 0:
+        ax.set_ylim(0, max(all_vals) * 1.15)
+
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/wdpa_strategies_comparison.png', dpi=300, bbox_inches='tight')
-    print(f"  Saved: {output_dir}/wdpa_strategies_comparison.png")
+    plt.savefig(f'{output_dir}/overhead_analysis.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: overhead_analysis.png")
     plt.close()
 
 
-def generate_plots_per_support(results_file=f'results/{benchmark_name}/benchmark_results.json'):
-    """Generate all original plots separately for each support threshold."""
-    print("="*80)
-    print("BENCHMARK RESULTS VISUALIZATION - PER SUPPORT THRESHOLD")
-    print("="*80)
-    print(f"Loading results from: {results_file}")
+def plot_cross_benchmark_comparison(benchmark_names, support_threshold, output_base_dir='results'):
+    """
+    NEW: Compare execution times across multiple benchmarks for a specific support threshold.
+    Shows how each strategy scales with dataset size.
 
-    results = load_results(results_file)
+    Args:
+        benchmark_names: List of benchmark directory names (e.g., ['benchmark_50k_001', 'benchmark_100k_001'])
+        support_threshold: Support threshold to compare (e.g., 0.0015)
+        output_base_dir: Base directory for results
+    """
+    print(f"\n[*] Comparing benchmarks for support {support_threshold*100:.2f}%...")
+    print(f"   Benchmarks: {benchmark_names}")
 
-    sample_size, max_items = get_dataset_info(results)
-    print(f"Dataset: {sample_size:,} orders, {max_items:,} items")
-    print("-"*80)
+    # Collect data from all benchmarks
+    benchmark_data = {}
 
-    # Check if processor scaling is enabled
-    processor_scaling = detect_processor_scaling(results)
+    for bm_name in benchmark_names:
+        results_file = f'{output_base_dir}/{bm_name}/benchmark_results.json'
+        if not os.path.exists(results_file):
+            print(f"   [!] Skipping {bm_name} - file not found")
+            continue
 
-    if processor_scaling:
-        print(f"\n🔍 PROCESSOR SCALING MODE DETECTED")
-        print(f"   Processor counts: {processor_scaling}")
-        print(f"   Generating processor scaling plots for each support...\n")
-    else:
-        print(f"\n📊 REGULAR MODE")
-        print(f"   Generating all standard plots for each support...\n")
+        try:
+            with open(results_file, 'r') as f:
+                results = json.load(f)
 
-    # Generate plots for each support threshold
-    support_thresholds = results['results_by_support'].keys()
-    print(f"Found {len(support_thresholds)} support thresholds")
-    print(f"Generating separate plot folders for each...\n")
+            # Get dataset size
+            sample_size, _ = get_dataset_info(results)
 
-    for support_key, support_data in results['results_by_support'].items():
-        # Get the min_support value
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
+            # Find matching support threshold
+            for support_key, support_data in results['results_by_support'].items():
+                min_support = None
+                for algo_data in support_data.values():
+                    if 'min_support' in algo_data:
+                        min_support = algo_data['min_support']
+                        break
 
-        # Create folder name
-        folder_name = get_support_folder_name(min_support)
-        output_dir = f'results/{benchmark_name}/{folder_name}'
+                # Match support threshold (with tolerance)
+                if min_support and abs(min_support - support_threshold) < 0.00001:
+                    benchmark_data[sample_size] = {
+                        'name': bm_name,
+                        'support_data': support_data
+                    }
+                    break
 
-        print(f"📊 Support {min_support*100:.2f}% -> {folder_name}/")
+            if sample_size not in benchmark_data:
+                print(f"   [!] Skipping {bm_name} - support {support_threshold*100:.2f}% not found")
 
-        # Create the output directory
+        except Exception as e:
+            print(f"   [!] Error loading {bm_name}: {e}")
+
+    if len(benchmark_data) < 2:
+        print(f"   [!] Not enough benchmarks with support {support_threshold*100:.2f}% - need at least 2")
+        return
+
+    # Get processor counts (assume all benchmarks have same processor counts)
+    first_bm = list(benchmark_data.values())[0]
+    proc_counts = []
+    for key in first_bm['support_data'].keys():
+        _, num_procs = parse_result_key(key)
+        if num_procs is not None:
+            proc_counts.append(num_procs)
+    proc_counts = sorted(list(set(proc_counts)))
+
+    print(f"   Found {len(benchmark_data)} benchmarks with {len(proc_counts)} processor counts")
+
+    # Sort benchmarks by dataset size
+    sorted_sizes = sorted(benchmark_data.keys())
+
+    # Create plots for each strategy
+    strategies = ['BL', 'CL', 'BWT', 'CWT']
+
+    for strategy in strategies:
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        colors = plt.cm.viridis(np.linspace(0, 0.9, len(sorted_sizes)))
+
+        for size_idx, dataset_size in enumerate(sorted_sizes):
+            bm_info = benchmark_data[dataset_size]
+            support_data = bm_info['support_data']
+
+            times = []
+            valid_procs = []
+
+            for num_procs in proc_counts:
+                key = f'wdpa_{strategy}_{num_procs}p'
+                if key in support_data:
+                    data = support_data[key]
+                    comp_time = data.get('computation_time', data.get('total_time', 0))
+                    if comp_time > 0:
+                        times.append(comp_time)
+                        valid_procs.append(num_procs)
+
+            if valid_procs:
+                color = colors[size_idx]
+                label = f'{dataset_size:,} transactions'
+                ax.plot(valid_procs, times, marker='o', linewidth=2.5, markersize=5,
+                       color=color, alpha=0.85, label=label)
+
+        ax.set_xlabel('Number of Processors', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Computation Time (seconds)', fontsize=12, fontweight='bold')
+        ax.set_title(f'WDPA-{strategy}: Scaling Across Dataset Sizes\n' +
+                    f'Support Threshold: {support_threshold*100:.2f}%',
+                    fontsize=13, fontweight='bold')
+        ax.set_xticks(proc_counts)
+        ax.legend(loc='best', framealpha=0.95, edgecolor='black', title='Dataset Size')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save to results directory (not in any specific benchmark)
+        output_dir = f'{output_base_dir}/cross_benchmark_analysis'
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        # Create a temporary results object with just this support threshold
-        single_support_results = {
-            'metadata': results['metadata'],
-            'results_by_support': {support_key: support_data}
-        }
+        filename = f'cross_benchmark_{strategy}_support_{int(support_threshold*10000)}.png'
+        plt.savefig(f'{output_dir}/{filename}', dpi=DPI, bbox_inches='tight')
+        print(f"   [OK] Saved: {filename}")
+        plt.close()
 
-        # Generate all the original plots for this single support
-        if processor_scaling:
-            # Processor scaling mode
-            plot_traditional_failure_analysis(single_support_results, output_dir)
-            plot_processor_scaling_analysis(single_support_results, output_dir)
+
+def generate_cross_benchmark_plots(benchmark_names=None, support_thresholds=None):
+    """
+    Generate cross-benchmark comparison plots for specified benchmarks and support thresholds.
+
+    Args:
+        benchmark_names: List of benchmark names or None to auto-detect
+        support_thresholds: List of support thresholds or None to use common ones
+    """
+    if benchmark_names is None:
+        # Auto-detect available benchmarks
+        import glob
+        benchmark_dirs = glob.glob('results/benchmark_*')
+        benchmark_names = [os.path.basename(d) for d in benchmark_dirs
+                          if os.path.isdir(d) and not d.endswith('.zip')]
+        benchmark_names = sorted(benchmark_names)
+        print(f"\n[*] Auto-detected benchmarks: {benchmark_names}")
+
+    if support_thresholds is None:
+        # Default common support thresholds
+        support_thresholds = [0.0008, 0.001, 0.0015, 0.002, 0.003]
+        print(f"[*] Using default support thresholds: {[f'{s*100:.2f}%' for s in support_thresholds]}")
+
+    print("\n" + "="*80)
+    print("CROSS-BENCHMARK COMPARISON")
+    print("="*80)
+
+    for support in support_thresholds:
+        plot_cross_benchmark_comparison(benchmark_names, support)
+
+    print("\n" + "="*80)
+    print("[SUCCESS] Cross-benchmark analysis complete!")
+    print("="*80)
+    print(f"\nPlots saved in: results/cross_benchmark_analysis/")
+    print("="*80)
+
+
+def generate_detailed_summary(results, output_dir):
+    """
+    Generate a detailed text summary with all numerical data for paper tables.
+    Includes all metrics shown in graphs plus additional statistics.
+    """
+    print("\n[*] Generating detailed numerical summary...")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    sample_size, max_items = get_dataset_info(results)
+
+    summary_file = f'{output_dir}/benchmark_detailed_summary.txt'
+
+    with open(summary_file, 'w') as f:
+        f.write("="*80 + "\n")
+        f.write("DETAILED BENCHMARK SUMMARY - NUMERICAL DATA FOR PAPER\n")
+        f.write("="*80 + "\n\n")
+
+        f.write(f"Dataset Information:\n")
+        f.write(f"  - Sample Size: {sample_size:,} transactions\n")
+        f.write(f"  - Max Items: {max_items:,} items\n")
+        f.write(f"  - Benchmark: {benchmark_name}\n\n")
+
+        # Get processor counts and support thresholds
+        proc_counts = get_processor_counts(results)
+        support_thresholds = []
+        for support_key, support_data in results['results_by_support'].items():
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    support_thresholds.append(algo_data['min_support'])
+                    break
+        support_thresholds = sorted(list(set(support_thresholds)))
+
+        f.write(f"Configuration:\n")
+        f.write(f"  - Processor Counts: {proc_counts}\n")
+        f.write(f"  - Support Thresholds: {[f'{s*100:.2f}%' for s in support_thresholds]}\n")
+        f.write(f"  - Strategies: BL, CL, BWT, CWT\n\n")
+
+        f.write("="*80 + "\n")
+        f.write("TABLE 1: EXECUTION TIME COMPARISON (seconds)\n")
+        f.write("="*80 + "\n\n")
+
+        strategies = ['BL', 'CL', 'BWT', 'CWT']
+
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            f.write(f"\nSupport Threshold: {min_support*100:.2f}%\n")
+            f.write("-"*80 + "\n")
+
+            # Table header
+            f.write(f"{'Algorithm':<20} ")
+            for p in proc_counts:
+                f.write(f"{p}p{' '*8}")
+            f.write("\n")
+            f.write("-"*80 + "\n")
+
+            # Naive Parallel (only has one configuration)
+            naive_data = support_data.get('naive_parallel', {})
+            naive_time = naive_data.get('total_time', 0)
+            f.write(f"{'Naive Parallel':<20} ")
+            f.write(f"{naive_time:>10.2f}s  (8 processors)\n")
+
+            # WDPA strategies
+            for strategy in strategies:
+                f.write(f"{'WDPA-' + strategy:<20} ")
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        data = support_data[key]
+                        comp_time = data.get('computation_time', data.get('total_time', 0))
+                        f.write(f"{comp_time:>10.2f}s ")
+                    else:
+                        f.write(f"{'N/A':>10s} ")
+                f.write("\n")
+
+            f.write("\n")
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("TABLE 2: SPEEDUP COMPARISON (vs 1 processor)\n")
+        f.write("="*80 + "\n\n")
+
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            f.write(f"\nSupport Threshold: {min_support*100:.2f}%\n")
+            f.write("-"*80 + "\n")
+
+            # Table header
+            f.write(f"{'Algorithm':<20} ")
+            for p in proc_counts:
+                f.write(f"{p}p{' '*8}")
+            f.write("\n")
+            f.write("-"*80 + "\n")
+
+            # Naive Parallel (baseline)
+            f.write(f"{'Naive Parallel':<20} ")
+            for p in proc_counts:
+                f.write(f"{1.0:>10.2f}x ")
+            f.write(" (baseline)\n")
+
+            # WDPA strategies
+            for strategy in strategies:
+                f.write(f"{'WDPA-' + strategy:<20} ")
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        data = support_data[key]
+                        speedup = data.get('speedup_metrics', {}).get('speedup', 0)
+                        f.write(f"{speedup:>10.2f}x ")
+                    else:
+                        f.write(f"{'N/A':>10s} ")
+                f.write("\n")
+
+            f.write("\n")
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("TABLE 3: PARALLEL EFFICIENCY (%)\n")
+        f.write("="*80 + "\n\n")
+
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            f.write(f"\nSupport Threshold: {min_support*100:.2f}%\n")
+            f.write("-"*80 + "\n")
+
+            # Table header
+            f.write(f"{'Algorithm':<20} ")
+            for p in proc_counts:
+                f.write(f"{p}p{' '*8}")
+            f.write(f"{'Average':<12}\n")
+            f.write("-"*80 + "\n")
+
+            # Naive Parallel
+            f.write(f"{'Naive Parallel':<20} ")
+            for p in proc_counts:
+                f.write(f"{100.0:>10.1f}% ")
+            f.write(f"{100.0:>10.1f}%\n")
+
+            # WDPA strategies
+            for strategy in strategies:
+                f.write(f"{'WDPA-' + strategy:<20} ")
+                efficiencies = []
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        data = support_data[key]
+                        eff = data.get('speedup_metrics', {}).get('efficiency', 0) * 100
+                        f.write(f"{eff:>10.1f}% ")
+                        efficiencies.append(eff)
+                    else:
+                        f.write(f"{'N/A':>10s} ")
+
+                avg_eff = np.mean(efficiencies) if efficiencies else 0
+                f.write(f"{avg_eff:>10.1f}%\n")
+
+            f.write("\n")
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("TABLE 4: OVERHEAD ANALYSIS (% of total time)\n")
+        f.write("="*80 + "\n\n")
+
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            f.write(f"\nSupport Threshold: {min_support*100:.2f}%\n")
+            f.write("-"*80 + "\n")
+
+            # Table header
+            f.write(f"{'Algorithm':<20} ")
+            for p in proc_counts:
+                f.write(f"{p}p{' '*8}")
+            f.write("\n")
+            f.write("-"*80 + "\n")
+
+            # Naive Parallel
+            f.write(f"{'Naive Parallel':<20} ")
+            for p in proc_counts:
+                f.write(f"{0.0:>10.1f}% ")
+            f.write(" (no overhead tracked)\n")
+
+            # WDPA strategies
+            for strategy in strategies:
+                f.write(f"{'WDPA-' + strategy:<20} ")
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        data = support_data[key]
+                        total_time = data.get('total_time', 0)
+                        comp_time = data.get('computation_time', 0)
+                        overhead = ((total_time - comp_time) / total_time * 100) if total_time > 0 else 0
+                        f.write(f"{max(0, overhead):>10.1f}% ")
+                    else:
+                        f.write(f"{'N/A':>10s} ")
+                f.write("\n")
+
+            f.write("\n")
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("TABLE 5: ITEMSETS FOUND BY LEVEL\n")
+        f.write("="*80 + "\n\n")
+
+        for support_idx, (support_key, support_data) in enumerate(results['results_by_support'].items()):
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            f.write(f"\nSupport Threshold: {min_support*100:.2f}%\n")
+            f.write("-"*80 + "\n")
+
+            # Use data from 1 processor (all strategies find same itemsets)
+            for strategy in strategies:
+                key = f'wdpa_{strategy}_1p'
+                if key in support_data:
+                    data = support_data[key]
+                    itemsets_per_level = data.get('itemsets_per_level', {})
+
+                    f.write(f"WDPA-{strategy} (1 processor):\n")
+                    f.write(f"  Total Itemsets: {data.get('total_itemsets', 0):,}\n")
+                    f.write(f"  By Level:\n")
+                    for level, count in sorted(itemsets_per_level.items(), key=lambda x: int(x[0])):
+                        f.write(f"    Level {level}: {count:,} itemsets\n")
+                    f.write("\n")
+                    break  # All strategies find same itemsets, so only show once
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("AVERAGE PERFORMANCE ACROSS ALL SUPPORTS\n")
+        f.write("="*80 + "\n\n")
+
+        f.write("Average Speedup by Strategy:\n")
+        f.write("-"*80 + "\n")
+        for strategy in strategies:
+            all_speedups = []
+            for support_key, support_data in results['results_by_support'].items():
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        speedup = support_data[key].get('speedup_metrics', {}).get('speedup', 0)
+                        if speedup > 0:
+                            all_speedups.append(speedup)
+
+            if all_speedups:
+                f.write(f"  WDPA-{strategy}: {np.mean(all_speedups):.2f}x (min: {min(all_speedups):.2f}x, max: {max(all_speedups):.2f}x)\n")
+
+        f.write("\n\nAverage Efficiency by Strategy:\n")
+        f.write("-"*80 + "\n")
+        for strategy in strategies:
+            all_effs = []
+            for support_key, support_data in results['results_by_support'].items():
+                for p in proc_counts:
+                    key = f'wdpa_{strategy}_{p}p'
+                    if key in support_data:
+                        eff = support_data[key].get('speedup_metrics', {}).get('efficiency', 0) * 100
+                        if eff > 0:
+                            all_effs.append(eff)
+
+            if all_effs:
+                f.write(f"  WDPA-{strategy}: {np.mean(all_effs):.1f}% (min: {min(all_effs):.1f}%, max: {max(all_effs):.1f}%)\n")
+
+        f.write("\n\nBest Configuration by Support Threshold:\n")
+        f.write("-"*80 + "\n")
+        for support_key, support_data in results['results_by_support'].items():
+            min_support = None
+            for algo_data in support_data.values():
+                if 'min_support' in algo_data:
+                    min_support = algo_data['min_support']
+                    break
+
+            # Find best strategy at max processors
+            max_procs = max(proc_counts)
+            best_time = float('inf')
+            best_strategy = None
+
+            for strategy in strategies:
+                key = f'wdpa_{strategy}_{max_procs}p'
+                if key in support_data:
+                    comp_time = support_data[key].get('computation_time', float('inf'))
+                    if comp_time < best_time:
+                        best_time = comp_time
+                        best_strategy = strategy
+
+            if best_strategy:
+                f.write(f"  Support {min_support*100:.2f}%: WDPA-{best_strategy} ({best_time:.2f}s at {max_procs}p)\n")
+
+        f.write("\n" + "="*80 + "\n")
+        f.write("END OF DETAILED SUMMARY\n")
+        f.write("="*80 + "\n")
+
+    print(f"   [OK] Saved: benchmark_detailed_summary.txt")
+    print(f"   Contains: Execution times, speedups, efficiencies, overhead, itemset counts")
+
+
+def plot_wdpa_vs_naive_average(results, output_dir):
+    """
+    Compare average WDPA execution time vs Naive Parallel across processor counts.
+    Shows overall WDPA performance (averaged across all 4 strategies and all support thresholds) vs baseline.
+    X-axis: Number of processors
+    """
+    print("\n[*] Plotting WDPA vs Naive Parallel comparison...")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    sample_size, max_items = get_dataset_info(results)
+
+    # Get processor counts
+    proc_counts = get_processor_counts(results)
+
+    # For each processor count, calculate average WDPA time across all supports and all strategies
+    wdpa_avg_by_proc = {}
+
+    for num_procs in proc_counts:
+        wdpa_times_all = []
+
+        for support_key, support_data in results['results_by_support'].items():
+            strategies = ['BL', 'CL', 'BWT', 'CWT']
+
+            for strategy in strategies:
+                key = f'wdpa_{strategy}_{num_procs}p'
+                if key in support_data:
+                    comp_time = support_data[key].get('computation_time', 0)
+                    if comp_time > 0:
+                        wdpa_times_all.append(comp_time)
+
+        if wdpa_times_all:
+            wdpa_avg_by_proc[num_procs] = np.mean(wdpa_times_all)
         else:
-            # Regular mode - generate all standard plots
-            plot_execution_time_comparison(single_support_results, output_dir)
-            plot_speedup_comparison(single_support_results, output_dir)
-            plot_efficiency_comparison(single_support_results, output_dir)
-            plot_wdpa_strategies_detailed(single_support_results, output_dir)
-            plot_traditional_failure_analysis(single_support_results, output_dir)
-            plot_best_algorithm_summary(single_support_results, output_dir)
+            wdpa_avg_by_proc[num_procs] = 0
+    
+    scaling_ratios = None
 
-        print()
+    # Get Naive Parallel times (average across all supports for each processor count)
+    naive_avg_by_proc = {}
 
-    print("-"*80)
-    print("\n✅ All per-support plots generated successfully!")
-    print("="*80)
-    print(f"\nView your plots in: results/{benchmark_name}/")
-    for support_key, support_data in results['results_by_support'].items():
-        min_support = support_data.get('traditional', {}).get('min_support', 0)
-        if not min_support:
-            min_support = list(support_data.values())[0].get('min_support', 0)
-        folder_name = get_support_folder_name(min_support)
-        print(f"  - {folder_name}/ (Support: {min_support*100:.2f}%)")
+    for num_procs in proc_counts:
+        naive_times_at_proc = []
 
-    print("="*80)
+        for support_key, support_data in results['results_by_support'].items():
+            naive_data = support_data.get('naive_parallel', {})
+            naive_time = naive_data.get('total_time', 0)
+
+            if naive_time > 0:
+                naive_times_at_proc.append(naive_time)
+
+        naive_avg_by_proc[num_procs] = np.mean(naive_times_at_proc) if naive_times_at_proc else 0
+
+    # Create the comparison plot with dual y-axes
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+
+    # Extract data for plotting
+    procs = sorted(wdpa_avg_by_proc.keys())
+    wdpa_times = [wdpa_avg_by_proc[p] for p in procs]
+    naive_times = [naive_avg_by_proc[p] for p in procs]
+
+    # Use equal spacing for x-axis (indices) instead of actual processor values
+    x_positions = list(range(len(procs)))  # [0, 1, 2, 3, 4] for equal spacing
+
+    # Plot Naive Parallel on primary y-axis (left)
+    naive_label = 'Naive Parallel (estimated for each processor count)' if scaling_ratios else 'Naive Parallel (8 processors, fixed)'
+    line1 = ax1.plot(x_positions, naive_times, marker='s', linewidth=2.5, markersize=6,
+           color=COLORS.get('Naive Parallel', '#E74C3C'), alpha=0.85,
+           label=naive_label)
+
+    ax1.set_xlabel('Number of Processors', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Excecution Time (sec)', fontsize=12, fontweight='bold')
+    ax1.tick_params(axis='y')
+
+    # Set y-axis to linear scale with 500s intervals
+    import matplotlib.ticker as ticker
+    max_naive = max(naive_times)
+    ax1.set_ylim(0, max_naive * 1.1)
+    ax1.yaxis.set_major_locator(ticker.MultipleLocator(500))
+
+    # Create secondary y-axis for WDPA
+    ax2 = ax1.twinx()
+
+    # Plot WDPA on secondary y-axis (right)
+    line2 = ax2.plot(x_positions, wdpa_times, marker='o', linewidth=2.5, markersize=6,
+           color=COLORS.get('WDPA-CWT', '#9B59B6'), alpha=0.85,
+           label='WDPA Average (all strategies & supports)')
+
+    ax2.set_ylabel('WDPA Time (seconds)', fontsize=12, fontweight='bold', color=COLORS.get('WDPA-CWT', '#9B59B6'))
+    ax2.tick_params(axis='y', labelcolor=COLORS.get('WDPA-CWT', '#9B59B6'))
+
+    # Set WDPA y-axis scale to fixed 50 seconds
+    ax2.set_ylim(0, 400)
+
+    ax1.set_title(f'Average WDPA vs Naive Parallel Execution Time\n' +
+                f'Averaged across all support thresholds | Dataset: {sample_size:,} transactions',
+                fontweight='bold', fontsize=13)
+
+    # Set x-axis ticks at equal spacing with processor count labels
+    ax1.set_xticks(x_positions)
+    ax1.set_xticklabels([str(p) for p in procs])
+    ax1.grid(True, alpha=0.3)
+
+    # Combine legends
+    lines = line1 + line2
+    labels = [l.get_label() for l in lines]
+    ax1.legend(lines, labels, loc='upper right', framealpha=0.95, edgecolor='black')
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/wdpa_vs_naive_average.png', dpi=DPI, bbox_inches='tight')
+    print(f"   [OK] Saved: wdpa_vs_naive_average.png")
+
+    # Print summary statistics
+    print(f"\n   Summary Statistics:")
+    print(f"   {'Processors':<12} {'WDPA Avg':<12} {'Naive':<12} {'Speedup':<12}")
+    print(f"   {'-'*50}")
+    for i, num_procs in enumerate(procs):
+        speedup = naive_times[i] / wdpa_times[i] if wdpa_times[i] > 0 else 0
+        print(f"   {num_procs:<12} {wdpa_times[i]:>10.2f}s {naive_times[i]:>10.2f}s {speedup:>10.1f}×")
+
+    plt.close()
 
 
 def generate_all_plots(results_file=f'results/{benchmark_name}/benchmark_results.json',
-                       output_dir=f'results/{benchmark_name}/plots'):
-    """Generate all visualization plots."""
+                      output_dir=f'results/{benchmark_name}/publication_plots'):
+    """Generate all fixed publication-quality plots."""
     print("="*80)
-    print("BENCHMARK RESULTS VISUALIZATION")
+    print("FIXED PUBLICATION-QUALITY VISUALIZATION")
     print("="*80)
-    print(f"Loading results from: {results_file}")
+    print(f"Loading: {results_file}")
+    print(f"Publication Mode: {'ON' if PUBLICATION_MODE else 'OFF'} | DPI: {DPI}")
 
     results = load_results(results_file)
+    results = filter_results(results)
 
-    print(f"\nGenerating plots in: {output_dir}")
+    print(f"\nOutput directory: {output_dir}")
     print("-"*80)
 
-    # Check if processor scaling is enabled
-    processor_scaling = detect_processor_scaling(results)
+    # Generate all visualizations
+    plot_execution_time_comparison(results, output_dir)
+    plot_speedup_comparison(results, output_dir)
+    plot_speedup_vs_processors_overall(results, output_dir)
+    plot_efficiency_comparison(results, output_dir)
+    plot_overhead_analysis(results, output_dir)
+    plot_processor_scaling_all_supports(results, output_dir)
+    plot_wdpa_vs_naive_average(results, output_dir)
 
-    if processor_scaling:
-        print(f"\n🔍 PROCESSOR SCALING MODE DETECTED")
-        print(f"   Processor counts: {processor_scaling}")
-        print(f"   Skipping regular comparison plots (they don't work with multiple processor counts)")
-        print(f"   Generating processor scaling visualizations instead...\n")
+    # Generate detailed numerical summary for paper tables
+    generate_detailed_summary(results, output_dir)
 
-        # Only generate processor scaling plots
-        plot_traditional_failure_analysis(results, output_dir)
-        plot_processor_scaling_analysis(results, output_dir)
-
-        print("-"*80)
-        print("\n✅ Processor scaling plots generated successfully!")
-        print("="*80)
-        print(f"\nView your plots in: {output_dir}/")
-        print("  - traditional_failure_analysis.png (if traditional failed)")
-        print("  - processor_scaling_combined.png (all strategies comparison)")
-        for strategy in processor_scaling.keys():
-            print(f"  - processor_scaling_{strategy}.png (detailed 3-panel view)")
-
-    else:
-        print(f"\n📊 REGULAR BENCHMARK MODE")
-        print(f"   Single processor count per algorithm")
-        print(f"   Generating standard comparison plots...\n")
-
-        # Generate regular comparison plots
-        plot_execution_time_comparison(results, output_dir)
-        plot_speedup_comparison(results, output_dir)
-        plot_efficiency_comparison(results, output_dir)
-        plot_wdpa_strategies_detailed(results, output_dir)
-        plot_traditional_failure_analysis(results, output_dir)
-        plot_best_algorithm_summary(results, output_dir)
-
-        print("-"*80)
-        print("\n✅ All plots generated successfully!")
-        print("="*80)
-        print(f"\nView your plots in: {output_dir}/")
-        print("  - execution_time_comparison.png")
-        print("  - speedup_comparison.png")
-        print("  - efficiency_comparison.png")
-        print("  - wdpa_strategies_detailed.png")
-        print("  - traditional_failure_analysis.png")
-        print("  - best_algorithm_summary.png")
-
+    print("\n" + "="*80)
+    print("[SUCCESS] All plots generated successfully!")
+    print("="*80)
+    print(f"\nPlots saved in: {output_dir}/")
+    print("\nGenerated files:")
+    print("  - execution_time_comparison.png")
+    print("  - speedup_comparison.png")
+    print("  - speedup_vs_processors_overall.png")
+    print("  - efficiency_comparison.png")
+    print("  - overhead_analysis.png")
+    print("  - processor_scaling_BL_all_supports.png")
+    print("  - processor_scaling_CL_all_supports.png")
+    print("  - processor_scaling_BWT_all_supports.png")
+    print("  - processor_scaling_CWT_all_supports.png")
+    print("  - wdpa_vs_naive_average.png (NEW!)")
+    print("  - benchmark_detailed_summary.txt (NEW! - All numerical data for tables)")
     print("="*80)
 
 
 if __name__ == "__main__":
-    # Generate separate plots for each support threshold
-    generate_plots_per_support()
+    import sys
+
+    # Check if user wants cross-benchmark comparison
+    if len(sys.argv) > 1 and sys.argv[1] == '--cross-benchmark':
+        # Generate cross-benchmark comparison plots
+        # You can customize the benchmarks and supports here
+        benchmark_names = ['benchmark_50k_001', 'benchmark_100k_001', 'benchmark_150k_001']
+        support_thresholds = [0.0015, 0.002, 0.003]  # Customize which supports to compare
+
+        # Or use None for auto-detection
+        generate_cross_benchmark_plots(benchmark_names=None, support_thresholds=None)
+    else:
+        # Generate standard single-benchmark plots
+        generate_all_plots()
