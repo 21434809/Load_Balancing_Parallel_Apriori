@@ -1,0 +1,51 @@
+{
+  "description": "RECOMMENDED CONFIG FOR LINUX/WSL - Shows true parallelization benefits",
+  "_comment": "Linux uses fork() which is much faster than Windows spawn(). You'll see real speedup!",
+
+  "dataset": {
+    "sample_size": 200000,
+    "max_items": 10000,
+    "chunk_size": 5000,
+    "random_seed": 42,
+    "_comment": "Larger dataset works well on Linux due to efficient forking"
+  },
+
+  "algorithms": {
+    "traditional": {
+      "enabled": false,
+      "name": "Traditional Single-Threaded Apriori",
+      "method": "mlxtend",
+      "_comment": "Disabled by default - will fail with memory error on large datasets"
+    },
+    "naive_parallel": {
+      "enabled": false,
+      "name": "Naive Parallel Apriori",
+      "num_workers": 8,
+      "timeout": 3000,
+      "_comment": "DISABLE for large datasets (>5k items). Uses full matrix in memory!",
+      "_warning": "With 200k × 10k items, requires ~2GB RAM. Will timeout or crash on large datasets."
+    },
+    "wdpa": {
+      "enabled": true,
+      "name": "WDPA Parallel Apriori",
+      "strategies": ["BL", "CL", "BWT", "CWT"],
+      "num_processors": [1, 2, 4, 8, 16],
+      "max_k": 5,
+      "_comment": "Linux can efficiently handle up to 16+ processors with fork()"
+    }
+  },
+
+  "mining_parameters": {
+    "support_thresholds": [0.0008, 0.001, 0.002, 0.003, 0.0015],
+    "min_confidence": 0.5,
+    "min_lift": 1.0,
+    "_comment": "Lower support generates many candidates - ideal for showing parallelization benefits"
+  },
+
+  "output": {
+    "results_directory": "results/benchmark",
+    "save_individual_results": true,
+    "save_comparison_summary": true,
+    "generate_speedup_metrics": true
+  }
+}

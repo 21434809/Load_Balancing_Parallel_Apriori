@@ -43,7 +43,7 @@ Thumbs.db
 
 # Data files (if too large)
 data/*.csv
-# Project specific
+
 *.csv
 data/
 results/
