@@ -141,11 +141,3 @@ python scripts/visualize_results.py
 ## 📝 License
 
 This project is for academic research purposes.
-
-## 🙏 Acknowledgments
-
-- **Dataset**: Instacart via Kaggle
-- **mlxtend**: Sebastian Raschka's excellent machine learning library
-- **WDPA Algorithm**: Based on published research on parallel Apriori algorithms
-
----
