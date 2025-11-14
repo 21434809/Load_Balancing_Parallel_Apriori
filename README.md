@@ -1,6 +1,6 @@
 # Load Balancing Parallel Apriori
 
-A comprehensive comparison of Traditional, Naive Parallel, and WDPA (Workload-Distributed Parallel Apriori) algorithms on the Instacart Market Basket dataset.
+A comprehensive comparison of Traditional, Ye (2006) Parallel, Naive Parallel, and WDPA (Workload-Distributed Parallel Apriori) algorithms on the Instacart Market Basket dataset.
 
 ## ⚠️ IMPORTANT: Run on Linux/WSL for Best Results
 
@@ -16,11 +16,12 @@ On Windows, parallel algorithms appear slower due to process creation overhead. 
 
 ## 🎯 Project Overview
 
-This project implements and compares three Apriori algorithm variants:
+This project implements and compares four Apriori algorithm variants:
 
 1. **Traditional Single-Threaded Apriori** - Baseline implementation using mlxtend
 2. **Naive Parallel Apriori** - Simple parallel implementation with static partitioning
-3. **WDPA** - Advanced parallel algorithm with 4 lattice distribution strategies:
+3. **Ye’s Parallel Apriori (2006)** - Trie-based parallel baseline with transaction rescans
+4. **WDPA** - Advanced parallel algorithm with 4 lattice distribution strategies:
    - **BL** (Block Lattice): Block distribution
    - **CL** (Cyclic Lattice): Cyclic distribution
    - **BWT** (Block WeightTid): Weight-based block distribution
@@ -57,6 +58,11 @@ Edit `configs/benchmark_config.json` to customize:
     "naive_parallel": {
       "enabled": true,
       "num_workers": 4
+    },
+    "ye_parallel": {
+      "enabled": true,
+      "num_workers": 4,
+      "max_k": 5
     },
     "wdpa": {
       "enabled": true,
