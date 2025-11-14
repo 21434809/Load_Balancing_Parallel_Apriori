@@ -1,0 +1,22 @@
+{
+    "dataset_config": {
+      "use_full_dataset": true,
+      "sample_size": 20000,
+      "max_items": 20,
+      "chunk_size": 5000
+    },
+    "apriori_config": {
+      "support_thresholds": [0.0015, 0.002, 0.0025, 0.003],
+      "min_threshold": 1.0
+    },
+    "parallel_config": {
+      "auto": true,
+      "num_workers": 4
+    },
+    "output_config": {
+      "save_individual_results": true,
+      "save_summary": true,
+      "results_directory": "results"
+    }
+  }
+  
