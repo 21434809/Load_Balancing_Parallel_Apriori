@@ -43,3 +43,11 @@ Thumbs.db
 
 # Data files (if too large)
 data/*.csv
+# Project specific
+*.csv
+data/
+results/
+output/
+logs/
+temp/
+tid_full.pkl
