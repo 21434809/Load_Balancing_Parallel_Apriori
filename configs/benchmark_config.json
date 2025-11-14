@@ -3,7 +3,7 @@
   "_comment": "Linux uses fork() which is much faster than Windows spawn(). You'll see real speedup!",
 
   "dataset": {
-    "sample_size": 200000,
+    "sample_size": 150000,
     "max_items": 10000,
     "chunk_size": 5000,
     "random_seed": 42,
@@ -26,17 +26,24 @@
       "_warning": "With 200k × 10k items, requires ~2GB RAM. Will timeout or crash on large datasets."
     },
     "wdpa": {
-      "enabled": true,
+      "enabled": false,
       "name": "WDPA Parallel Apriori",
       "strategies": ["BL", "CL", "BWT", "CWT"],
       "num_processors": [1, 2, 4, 8, 16],
       "max_k": 5,
       "_comment": "Linux can efficiently handle up to 16+ processors with fork()"
+    },
+    "ye_parallel": {
+      "enabled": true,
+      "name": "Ye 2006 Parallel Apriori (Trie + rescans)",
+      "num_workers": [1, 2, 4, 8, 16],
+      "max_k": 5,
+      "_comment": "Transaction-rescan baseline as in Ye (2006)"
     }
   },
 
   "mining_parameters": {
-    "support_thresholds": [0.0008, 0.001, 0.002, 0.003, 0.0015],
+    "support_thresholds": [0.0015, 0.002],
     "min_confidence": 0.5,
     "min_lift": 1.0,
     "_comment": "Lower support generates many candidates - ideal for showing parallelization benefits"

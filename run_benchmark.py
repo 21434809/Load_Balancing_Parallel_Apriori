@@ -22,6 +22,7 @@ from mlxtend.frequent_patterns import apriori, association_rules
 from src.utils.unified_data_loader import load_data_for_benchmark
 from src.core.naive_parallel_apriori import run_naive_parallel_apriori
 from src.core.wdpa_parallel import WDPAParallelMiner
+from src.core.ye_parallel_apriori import run_ye_parallel_apriori
 
 
 def load_config(config_file: str = 'configs/benchmark_config.json') -> Dict:
@@ -317,6 +318,7 @@ def run_full_benchmark(config: Dict, verbose: bool = True):
     # Extract data
     basket_encoded = data['basket_encoded']
     tid = data['tid']
+    transactions = data.get('transactions')
     metadata = data['metadata']
 
     # Results storage
@@ -446,6 +448,45 @@ def run_full_benchmark(config: Dict, verbose: bool = True):
                                 )
                                 wdpa_results['speedup_baseline'] = baseline_name
 
+        # 4. Ye 2006 parallel Apriori (Trie + rescans)
+        if config['algorithms'].get('ye_parallel', {}).get('enabled', False):
+            ye_config = config['algorithms']['ye_parallel']
+            ye_workers = ye_config.get('num_workers', [1, 2, 4, 8, 16])
+            ye_max_k = ye_config.get('max_k', 5)
+
+            # Ensure transactions available
+            if transactions is None:
+                # Fallback: derive from basket_encoded if present
+                if basket_encoded is not None:
+                    arr_bool = basket_encoded.to_numpy(dtype=bool, copy=False)
+                    transactions = [list(row.nonzero()[0]) for row in arr_bool]
+                    for tx in transactions:
+                        tx.sort()
+                else:
+                    raise RuntimeError("Transactions not available for Ye parallel Apriori")
+
+            for workers in (ye_workers if isinstance(ye_workers, list) else [ye_workers]):
+                ye_key = f'ye_parallel_{workers}p' if isinstance(ye_workers, list) else 'ye_parallel'
+                start_time = time.time()
+                ye_df = run_ye_parallel_apriori(transactions, min_support, num_workers=workers, max_k=ye_max_k)
+                ye_time = time.time() - start_time
+                support_results[ye_key] = {
+                    'method': 'Ye Parallel Apriori',
+                    'min_support': min_support,
+                    'num_workers': workers,
+                    'total_itemsets': len(ye_df),
+                    'total_time': ye_time,
+                    'frequent_itemsets': ye_df,
+                    'status': 'success'
+                }
+
+                # Speedup vs baseline if available
+                if baseline_time:
+                    support_results[ye_key]['speedup_metrics'] = calculate_speedup_metrics(
+                        baseline_time, ye_time, workers
+                    )
+                    support_results[ye_key]['speedup_baseline'] = baseline_name
+
         results['results_by_support'][f'support_{min_support}'] = support_results
 
     # Save results in unique numbered folder
@@ -541,6 +582,16 @@ def generate_summary(results: Dict, config: Dict, output_dir: str, verbose: bool
                     efficiency = wdpa.get('speedup_metrics', {}).get('efficiency', 0)
                     name = f'WDPA-{strategy}'
                     f.write(f"{name:<30} {wdpa['total_time']:>12.4f} {wdpa['total_itemsets']:>10} {speedup:>10.2f} {efficiency:>10.2%}\n")
+
+            # Ye parallel variants (if present)
+            for workers in [1, 2, 4, 8, 16]:
+                key = f'ye_parallel_{workers}p'
+                if key in support_results:
+                    ye = support_results[key]
+                    speedup = ye.get('speedup_metrics', {}).get('speedup', 0)
+                    efficiency = ye.get('speedup_metrics', {}).get('efficiency', 0)
+                    name = f"Ye Parallel ({workers}p)"
+                    f.write(f"{name:<30} {ye['total_time']:>12.4f} {ye['total_itemsets']:>10} {speedup:>10.2f} {efficiency:>10.2%}\n")
 
             f.write("\n")
 

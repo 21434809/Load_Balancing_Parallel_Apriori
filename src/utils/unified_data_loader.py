@@ -37,6 +37,7 @@ class UnifiedDataLoader:
         # Determine what data structures we need to create
         self.need_basket_matrix = True  # Default to True for backwards compatibility
         self.need_tid = True  # Default to True for backwards compatibility
+        self.need_transactions = False
 
         if algorithms_config:
             # Only create basket matrix if traditional or naive_parallel is enabled
@@ -46,11 +47,14 @@ class UnifiedDataLoader:
             )
             # Only create TID if WDPA is enabled
             self.need_tid = algorithms_config.get('wdpa', {}).get('enabled', False)
+            # Create transactions if Ye parallel is enabled
+            self.need_transactions = algorithms_config.get('ye_parallel', {}).get('enabled', False)
 
         # Will be populated by load()
         self.market_basket = None  # Raw transaction data
         self.basket_encoded = None  # Binary basket matrix
         self.tid = None  # TID structure
+        self.transactions = None  # Horizontal transactions (List[List[int]])
 
         self.load_time = 0.0
         self.transform_time = 0.0
@@ -72,6 +76,7 @@ class UnifiedDataLoader:
             print(f"Random seed: {self.random_seed}")
             print(f"Will create basket matrix: {self.need_basket_matrix}")
             print(f"Will create TID structure: {self.need_tid}")
+            print(f"Will create transactions (Ye): {self.need_transactions}")
 
         # Step 1: Load raw data
         if verbose:
@@ -119,6 +124,16 @@ class UnifiedDataLoader:
                 print("\n[3/3] Skipping TID structure (not needed for enabled algorithms)")
             self.tid_build_time = 0.0
 
+        # Step 4: Build horizontal transactions for Ye - CONDITIONAL
+        if self.need_transactions:
+            if verbose:
+                print("\n[EXTRA] Creating horizontal transactions for Ye (2006) parallel Apriori...")
+            self.transactions = self._create_transactions(verbose)
+            if verbose:
+                print(f"  Transactions list created: {len(self.transactions):,} orders")
+        else:
+            self.transactions = None
+
         if verbose:
             print("\n" + "="*80)
             print("DATA LOADING COMPLETE")
@@ -129,6 +144,7 @@ class UnifiedDataLoader:
             'market_basket': self.market_basket,
             'basket_encoded': self.basket_encoded,
             'tid': self.tid,
+            'transactions': self.transactions,
             'metadata': {
                 'total_transactions': len(self.market_basket),
                 'unique_orders': self.market_basket['order_id'].nunique(),
@@ -136,6 +152,7 @@ class UnifiedDataLoader:
                 'basket_shape': self.basket_encoded.shape if self.basket_encoded is not None else None,
                 'tid_total_transactions': self.tid.total_transactions if self.tid is not None else None,
                 'tid_unique_items': len(self.tid.item_to_tids) if self.tid is not None else None,
+                'has_transactions': self.transactions is not None,
                 'load_time': self.load_time,
                 'transform_time': self.transform_time,
                 'tid_build_time': self.tid_build_time
@@ -198,6 +215,13 @@ class UnifiedDataLoader:
         tid.build_from_orders(tid_data, order_col='order_id', product_col='product_id', verbose=False)
 
         return tid
+
+    def _create_transactions(self, verbose: bool = True) -> list[list[int]]:
+        """
+        Create horizontal transactions (sorted unique product_id per order).
+        """
+        grouped = self.market_basket.groupby('order_id')['product_id'].apply(lambda s: sorted(set(map(int, s.values)))).reset_index()
+        return grouped['product_id'].tolist()
 
     def get_statistics(self) -> Dict:
         """Get detailed statistics about the loaded data."""
